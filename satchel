@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crate — ContextCrate: run AI coding agents (Claude Code, Codex) in
+# satchel — Satchel: run AI coding agents (Claude Code, Codex) in
 # disposable containers, with handoffs, MCP servers, and skills synced
 # between machines through a private git repo.
 #
@@ -8,31 +8,31 @@
 # and docs/adr/ for why things are the way they are.
 set -euo pipefail
 
-CRATE_VERSION="2.0.0"
-CRATE_REPO="SwaggyMike/contextcrate"
+SATCHEL_VERSION="2.0.0"
+SATCHEL_REPO="SwaggyMike/satchel"
 
-CRATE_DIR="${CRATE_DIR:-$HOME/.contextcrate}"
-CONFIG_FILE="$CRATE_DIR/config"
-SYNC_DIR="$CRATE_DIR/sync"
-HOMES_DIR="$CRATE_DIR/home"
-SNAP_DIR="$CRATE_DIR/snapshots"
-LOCAL_TOKENS_FILE="$CRATE_DIR/mcp-tokens.local.env"
-IMAGE="localhost/contextcrate:latest"
+SATCHEL_DIR="${SATCHEL_DIR:-$HOME/.satchel}"
+CONFIG_FILE="$SATCHEL_DIR/config"
+SYNC_DIR="$SATCHEL_DIR/sync"
+HOMES_DIR="$SATCHEL_DIR/home"
+SNAP_DIR="$SATCHEL_DIR/snapshots"
+LOCAL_TOKENS_FILE="$SATCHEL_DIR/mcp-tokens.local.env"
+IMAGE="localhost/satchel:latest"
 
 # Set by load_config / flags.
 MACHINE=""
 SYNC_URL=""
-CRATE_UID=""
-CRATE_GID=""
+SATCHEL_UID=""
+SATCHEL_GID=""
 HOST_MODE=0
 UNSAFE_HOME=0
 ENGINE=""
 
 # ---------------------------------------------------------------- helpers
 
-info() { printf 'crate: %s\n' "$*" >&2; }
-warn() { printf 'crate: warning: %s\n' "$*" >&2; }
-die()  { printf 'crate: error: %s\n' "$*" >&2; exit 1; }
+info() { printf 'satchel: %s\n' "$*" >&2; }
+warn() { printf 'satchel: warning: %s\n' "$*" >&2; }
+die()  { printf 'satchel: error: %s\n' "$*" >&2; exit 1; }
 
 confirm() { # confirm "question"  → returns 0 on yes; default no (for destructive asks)
   local reply
@@ -50,16 +50,16 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"
 }
 
-# The settings catalog — single source of truth for 'crate settings', the
+# The settings catalog — single source of truth for 'satchel settings', the
 # config template, and what the setter accepts. Fields: KEY|scope|default|help.
 # 'pref' settings sync fleet-wide via settings.env in the Sync Repo; 'machine'
 # settings describe this box and stay in the local config.
 SETTINGS_SPEC=(
-  "CRATE_HANDOFF_MODEL_CLAUDE|pref|haiku|model that writes handoffs: haiku, sonnet, opus, fable, or a full model name; '' = the agent's default"
-  "CRATE_HANDOFF_MODEL_CODEX|pref||same for codex; '' = the agent's default"
-  "CRATE_ENGINE|machine||force docker or podman (default: auto-detect)"
-  "CRATE_UID|machine||user id inside session containers (default: your uid; 1000 if root)"
-  "CRATE_GID|machine||group id inside session containers (default: CRATE_UID)"
+  "SATCHEL_HANDOFF_MODEL_CLAUDE|pref|haiku|model that writes handoffs: haiku, sonnet, opus, fable, or a full model name; '' = the agent's default"
+  "SATCHEL_HANDOFF_MODEL_CODEX|pref||same for codex; '' = the agent's default"
+  "SATCHEL_ENGINE|machine||force docker or podman (default: auto-detect)"
+  "SATCHEL_UID|machine||user id inside session containers (default: your uid; 1000 if root)"
+  "SATCHEL_GID|machine||group id inside session containers (default: SATCHEL_UID)"
 )
 SYNC_SETTINGS_FILE="$SYNC_DIR/settings.env"
 
@@ -72,19 +72,19 @@ load_config() {
   MACHINE="${MACHINE:-$(hostname -s)}"
   local uid; uid="$(id -u)"
   # Never run agents as root inside the container; on root hosts (Unraid)
-  # fall back to 1000:1000. Override with CRATE_UID/CRATE_GID in the config.
-  if [ -z "$CRATE_UID" ]; then
-    if [ "$uid" -eq 0 ]; then CRATE_UID=1000; CRATE_GID=1000
-    else CRATE_UID="$uid"; CRATE_GID="$(id -g)"; fi
+  # fall back to 1000:1000. Override with SATCHEL_UID/SATCHEL_GID in the config.
+  if [ -z "$SATCHEL_UID" ]; then
+    if [ "$uid" -eq 0 ]; then SATCHEL_UID=1000; SATCHEL_GID=1000
+    else SATCHEL_UID="$uid"; SATCHEL_GID="$(id -g)"; fi
   fi
-  CRATE_GID="${CRATE_GID:-$CRATE_UID}"
+  SATCHEL_GID="${SATCHEL_GID:-$SATCHEL_UID}"
 }
 
 sync_ready() { [ -n "$SYNC_URL" ] && [ -d "$SYNC_DIR/.git" ]; }
 
 engine() {
   if [ -z "$ENGINE" ]; then
-    if [ -n "${CRATE_ENGINE:-}" ]; then ENGINE="$CRATE_ENGINE"
+    if [ -n "${SATCHEL_ENGINE:-}" ]; then ENGINE="$SATCHEL_ENGINE"
     elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then ENGINE=docker
     elif command -v podman >/dev/null 2>&1; then ENGINE=podman
     else die "neither docker nor podman is available"
@@ -111,8 +111,8 @@ has_upstream() { git_sync rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; }
 # git was never configured: give the clone a repo-local identity named after
 # the machine. A user's global identity, if present, wins.
 ensure_sync_identity() {
-  git_sync config user.name  >/dev/null 2>&1 || git_sync config user.name "crate on $MACHINE"
-  git_sync config user.email >/dev/null 2>&1 || git_sync config user.email "crate@$MACHINE"
+  git_sync config user.name  >/dev/null 2>&1 || git_sync config user.name "satchel on $MACHINE"
+  git_sync config user.email >/dev/null 2>&1 || git_sync config user.email "satchel@$MACHINE"
   return 0
 }
 
@@ -138,9 +138,9 @@ RUN apt-get update \
       python3 make g++ bubblewrap \
  && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
-ENV HOME=/home/crate
-RUN mkdir -p /home/crate && chmod 0777 /home/crate
-WORKDIR /home/crate
+ENV HOME=/home/satchel
+RUN mkdir -p /home/satchel && chmod 0777 /home/satchel
+WORKDIR /home/satchel
 DOCKERFILE
   rm -rf "$ctx"
   info "image built: $IMAGE"
@@ -207,7 +207,7 @@ mcp_names() {
 }
 
 cmd_mcp() {
-  sync_ready || die "sync is not set up — run 'crate init' first"
+  sync_ready || die "sync is not set up — run 'satchel init' first"
   local sub="${1:-list}"; shift || true
   case "$sub" in
     list)
@@ -221,7 +221,7 @@ cmd_mcp() {
       ;;
     add)
       local name="${1:-}" url="${2:-}" auth="bearer"
-      # Bare 'crate mcp add' walks through it; args skip the questions.
+      # Bare 'satchel mcp add' walks through it; args skip the questions.
       if [ -z "$name" ]; then
         read -r -p "  server name (e.g. homeassistant): " name
         [ -n "$name" ] || { info "cancelled"; return 0; }
@@ -269,7 +269,7 @@ cmd_mcp() {
       quiet_push "mcp: remove $name"
       info "removed '$name' (if its token was ever synced it remains in git history — rotate it at the source if that matters)"
       ;;
-    *) die "usage: crate mcp [list|add|remove]" ;;
+    *) die "usage: satchel mcp [list|add|remove]" ;;
   esac
 }
 
@@ -289,7 +289,7 @@ prompt_token() { # ADR 0002: offer synced (default) or local-only storage
   fi
 }
 
-# Materialize the registry into each agent's native config inside its crate
+# Materialize the registry into each agent's native config inside its satchel
 # home. The registry is the source of truth: the managed section is rebuilt
 # every session start. Tokens are baked in here — these files live in the
 # local agent home, which never syncs.
@@ -326,11 +326,11 @@ materialize_mcp() {
       touch "$cfg"
       block="$(jq -r '.servers | to_entries[] |
         "[mcp_servers.\(.key)]\nurl = \"\(.value.url)\""' "$MCP_FILE")"
-      awk '/^# >>> contextcrate mcp >>>$/{skip=1} !skip{print} /^# <<< contextcrate mcp <<<$/{skip=0}' \
+      awk '/^# >>> satchel mcp >>>$/{skip=1} !skip{print} /^# <<< satchel mcp <<<$/{skip=0}' \
         "$cfg" > "$cfg.tmp"
       {
         cat "$cfg.tmp"
-        printf '# >>> contextcrate mcp >>>\n# managed by crate — rebuilt every session start\n%s\n# <<< contextcrate mcp <<<\n' "$block"
+        printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s\n# <<< satchel mcp <<<\n' "$block"
       } > "$cfg"
       rm -f "$cfg.tmp"
       ;;
@@ -339,7 +339,7 @@ materialize_mcp() {
 
 # --------------------------------------------------------------- handoffs
 
-HANDOFF_MARK='<!-- contextcrate-handoff'
+HANDOFF_MARK='<!-- satchel-handoff'
 
 latest_handoff() { # latest_handoff <slug> → prints path of newest handoff across all machines
   local slug="$1" best="" best_date="" f date
@@ -353,7 +353,7 @@ latest_handoff() { # latest_handoff <slug> → prints path of newest handoff acr
 }
 
 # The handoff reaches the agent through its global memory file inside the
-# crate-owned home (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md). Rewritten at
+# satchel-owned home (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md). Rewritten at
 # every session start, so it always reflects the current project.
 write_memory_file() { # write_memory_file <agent> <home> <slug>
   local agent="$1" home="$2" slug="$3" target handoff from
@@ -366,14 +366,14 @@ write_memory_file() { # write_memory_file <agent> <home> <slug>
   if [ -n "$handoff" ]; then
     from="$(sed -n "1s/.*machine=\([^ ]*\).*date=\([^ ]*\).*/machine \1, \2/p" "$handoff")"
     {
-      printf '# Managed by ContextCrate — rewritten at every session start; do not edit.\n\n'
+      printf '# Managed by Satchel — rewritten at every session start; do not edit.\n\n'
       printf '## Handoff from the previous session on this project (%s)\n\n' "$from"
       tail -n +2 "$handoff"
       printf '\nContinue from this handoff unless the user redirects you.\n'
     } > "$target"
     info "handoff loaded ($from)"
   else
-    printf '# Managed by ContextCrate — rewritten at every session start; do not edit.\n\nNo handoff exists for this project yet. One is written automatically when a session ends.\n' > "$target"
+    printf '# Managed by Satchel — rewritten at every session start; do not edit.\n\nNo handoff exists for this project yet. One is written automatically when a session ends.\n' > "$target"
   fi
 }
 
@@ -383,15 +383,15 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
   local prompt='The session is ending. Based on this conversation, write a handoff note so the next session on this project can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. Output only the markdown, no preamble.'
   # A handoff is a summary chore in a fixed format — the small fast model is
   # plenty and halves the wait at session end. Override per agent via
-  # 'crate settings'; empty means the agent's own default model.
+  # 'satchel settings'; empty means the agent's own default model.
   local base_cmd model setting
   case "$agent" in
     claude)
       base_cmd=(claude --continue -p "$prompt")
-      model="${CRATE_HANDOFF_MODEL_CLAUDE-haiku}"; setting=CRATE_HANDOFF_MODEL_CLAUDE ;;
+      model="${SATCHEL_HANDOFF_MODEL_CLAUDE-haiku}"; setting=SATCHEL_HANDOFF_MODEL_CLAUDE ;;
     codex)
       base_cmd=(codex exec resume --last -c 'sandbox_mode="danger-full-access"' "$prompt")
-      model="${CRATE_HANDOFF_MODEL_CODEX-}"; setting=CRATE_HANDOFF_MODEL_CODEX ;;
+      model="${SATCHEL_HANDOFF_MODEL_CODEX-}"; setting=SATCHEL_HANDOFF_MODEL_CODEX ;;
   esac
   local cmd=("${base_cmd[@]}")
   case "$agent:$model" in
@@ -400,7 +400,7 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
   esac
 
   info "writing handoff… (Ctrl-C skips it)"
-  # Trap INT so Ctrl-C skips the handoff instead of killing crate mid-script.
+  # Trap INT so Ctrl-C skips the handoff instead of killing satchel mid-script.
   local body="" rc=0
   trap 'rc=130' INT
   body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>/dev/null)" || rc=$?
@@ -412,10 +412,10 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
   # The prompt mandates a "## Goal" section; anything without one is an agent
   # error message ("Not logged in", model not found, usage text), not a handoff.
   if ! printf '%s' "$body" | grep -q '^## Goal'; then
-    # Fatfingered model safeguard: a bad CRATE_HANDOFF_MODEL_* must not stop
+    # Fatfingered model safeguard: a bad SATCHEL_HANDOFF_MODEL_* must not stop
     # handoffs — retry once on the agent's own default and say who to blame.
     if [ -n "$model" ]; then
-      warn "handoff model '$model' failed — retrying with the agent's default (fix with: crate settings $setting <model>)"
+      warn "handoff model '$model' failed — retrying with the agent's default (fix with: satchel settings $setting <model>)"
       rc=0
       trap 'rc=130' INT
       body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" 2>/dev/null)" || rc=$?
@@ -438,7 +438,7 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
 # ----------------------------------------------------------------- sync
 
 cmd_sync() {
-  sync_ready || die "sync is not set up — run 'crate init' first"
+  sync_ready || die "sync is not set up — run 'satchel init' first"
   ensure_sync_identity
   git_sync add -A
   if ! git_sync diff --cached --quiet; then
@@ -448,7 +448,7 @@ cmd_sync() {
   # Conflicts are surfaced, never auto-resolved: a failed rebase stops here
   # and leaves the repo for the user to resolve with plain git.
   if has_upstream && ! git_sync pull --rebase; then
-    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then run 'crate sync' again"
+    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then run 'satchel sync' again"
   fi
   git_sync push -u origin HEAD
   info "synced with $SYNC_URL"
@@ -468,7 +468,7 @@ quiet_push() { # quiet_push <message> — best-effort commit+push of the Sync Re
   git_sync commit -q -m "$1" || return 0
   has_upstream && { timeout 30 git -C "$SYNC_DIR" pull --rebase -q 2>/dev/null || true; }
   timeout 30 git -C "$SYNC_DIR" push -q -u origin HEAD 2>/dev/null \
-    || warn "could not push the Sync Repo — the change is committed locally; run 'crate sync' when back online"
+    || warn "could not push the Sync Repo — the change is committed locally; run 'satchel sync' when back online"
 }
 
 # --------------------------------------------------------------- sessions
@@ -478,19 +478,19 @@ RUN_ARGS=()
 compose_run_args() { # compose_run_args <agent> <home> <project>
   local agent="$1" home="$2" project="$3"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
-  # throwaway container can only fail or evaporate — 'crate update' is the way.
-  RUN_ARGS=(--init -e HOME=/home/crate -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
-  RUN_ARGS+=(-v "$home:/home/crate")
+  # throwaway container can only fail or evaporate — 'satchel update' is the way.
+  RUN_ARGS=(--init -e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
+  RUN_ARGS+=(-v "$home:/home/satchel")
   if [ "$agent" = claude ] && sync_ready; then
     mkdir -p "$SYNC_DIR/skills/claude" "$home/.claude"
-    RUN_ARGS+=(-v "$SYNC_DIR/skills/claude:/home/crate/.claude/skills")
+    RUN_ARGS+=(-v "$SYNC_DIR/skills/claude:/home/satchel/.claude/skills")
   fi
   RUN_ARGS+=(-v "$project:$project" -w "$project")
   if [ "$HOST_MODE" -eq 1 ]; then
     # Host Session: the container is packaging, not protection (CONTEXT.md).
     RUN_ARGS+=(--privileged --pid=host --network=host --user 0:0 -v /:/host)
   else
-    RUN_ARGS+=(--user "$CRATE_UID:$CRATE_GID" --cap-drop ALL --security-opt no-new-privileges)
+    RUN_ARGS+=(--user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
     if podman_rootless; then RUN_ARGS+=(--userns=keep-id); fi
   fi
   return 0
@@ -507,7 +507,7 @@ session_mount_guard() {
   case "$HOME" in "$PWD"|"$PWD"/*) bad=1 ;; esac
   if [ "$bad" -eq 1 ]; then
     die "refusing to start a session in $PWD — that would mount your entire home directory (SSH keys, MCP tokens, logins) read-write into the sandbox.
-       cd into a project directory, or run 'crate --unsafe-home $1' if you really mean it."
+       cd into a project directory, or run 'satchel --unsafe-home $1' if you really mean it."
   fi
   return 0
 }
@@ -515,7 +515,7 @@ session_mount_guard() {
 cmd_session() {
   local agent="$1"; shift
   # Crate's own flags also work after the agent name, so the shims feel like
-  # the real CLIs: 'claude --host' == 'crate --host claude'. Neither agent
+  # the real CLIs: 'claude --host' == 'satchel --host claude'. Neither agent
   # has flags by these names, so plucking them out is unambiguous.
   local a args=()
   for a in "$@"; do
@@ -535,7 +535,7 @@ cmd_session() {
   mkdir -p "$home"
 
   if ! sync_ready; then
-    warn "sync is not set up (run 'crate init') — session is sandboxed but nothing will sync"
+    warn "sync is not set up (run 'satchel init') — session is sandboxed but nothing will sync"
   fi
   quiet_pull
 
@@ -562,7 +562,7 @@ cmd_session() {
   # Codex's own sandbox (bubblewrap) cannot create namespaces inside the
   # container, and the container IS the sandbox here — so codex runs with its
   # sandbox off, same spirit as claude --dangerously-skip-permissions inside
-  # crate. User-passed -c flags come later on the command line and win.
+  # satchel. User-passed -c flags come later on the command line and win.
   local launch=("$agent")
   if [ "$agent" = codex ]; then
     launch=(codex -c 'sandbox_mode="danger-full-access"' -c check_for_update_on_startup=false)
@@ -572,7 +572,7 @@ cmd_session() {
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
 
   if sync_ready; then
-    if [ -z "${CRATE_NO_HANDOFF:-}" ] \
+    if [ -z "${SATCHEL_NO_HANDOFF:-}" ] \
        && [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -newer "$stamp" -print -quit 2>/dev/null)" ]; then
       generate_handoff "$agent" "$slug" "$project"
     else
@@ -589,12 +589,12 @@ cmd_session() {
 # ------------------------------------------------------------------- init
 
 # Crate generates and shows this machine's SSH key; pasting it into the git
-# host stays manual — crate never talks to a git host's API.
+# host stays manual — satchel never talks to a git host's API.
 have_pubkey() { compgen -G "$HOME/.ssh/*.pub" >/dev/null; }
 
 generate_key() {
   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-  ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "crate@$MACHINE"
+  ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "satchel@$MACHINE"
 }
 
 print_pubkeys() { # print_pubkeys "context message"
@@ -636,7 +636,7 @@ ssh_key_hint() {
 
 cmd_init() {
   need_cmd git; need_cmd jq; engine >/dev/null
-  mkdir -p "$CRATE_DIR" && chmod 700 "$CRATE_DIR"
+  mkdir -p "$SATCHEL_DIR" && chmod 700 "$SATCHEL_DIR"
 
   local name url
   read -r -p "machine name [$MACHINE]: " name
@@ -645,8 +645,8 @@ cmd_init() {
   url="${url:-$SYNC_URL}"
 
   {
-    printf '# ContextCrate config — plain bash, sourced by crate.\n'
-    printf "# See and change settings with 'crate settings'; this file is the\n"
+    printf '# Satchel config — plain bash, sourced by satchel.\n'
+    printf "# See and change settings with 'satchel settings'; this file is the\n"
     printf '# machine-local layer (it wins over the synced settings.env).\n'
     printf 'MACHINE=%q\n' "$name"
     printf 'SYNC_URL=%q\n' "$url"
@@ -667,7 +667,7 @@ cmd_init() {
       ssh_key_hint "$url"
       key_shown=1
       if ! confirm_yes "added the key to your git host? retry the clone?"; then
-        warn "skipping sync for now — sessions work, nothing syncs; run 'crate init' when ready"
+        warn "skipping sync for now — sessions work, nothing syncs; run 'satchel init' when ready"
         url=""
         break
       fi
@@ -687,7 +687,7 @@ cmd_init() {
       info "machine '$name' joined the fleet"
     else
       warn "cloned OK but PUSH FAILED — if you used a deploy key it may be read-only; sync needs write access"
-      warn "fix the key's access on the git host, then run 'crate sync'"
+      warn "fix the key's access on the git host, then run 'satchel sync'"
     fi
   else
     if [ "$key_shown" -eq 0 ]; then
@@ -695,7 +695,7 @@ cmd_init() {
         generate_key
       fi
       if have_pubkey; then
-        print_pubkeys "this machine's public key — add it to your git host now, and connecting a sync repo later is one 'crate init' away:"
+        print_pubkeys "this machine's public key — add it to your git host now, and connecting a sync repo later is one 'satchel init' away:"
       fi
     fi
     warn "no sync repo — sessions work, but handoffs/MCP/skills stay on this machine"
@@ -704,14 +704,14 @@ cmd_init() {
   if confirm_yes "build the container image now? (a few minutes; otherwise it builds on first session)"; then
     build_image
   fi
-  info "done. try: cd <a project> && crate claude"
+  info "done. try: cd <a project> && satchel claude"
 }
 
 # ----------------------------------------------------------------- import
 
 cmd_import() {
   local agent="${1:-}" home
-  [ "$agent" = claude ] || [ "$agent" = codex ] || die "usage: crate import <claude|codex>"
+  [ "$agent" = claude ] || [ "$agent" = codex ] || die "usage: satchel import <claude|codex>"
   home="$HOMES_DIR/$agent"
   mkdir -p "$home"
   case "$agent" in
@@ -750,7 +750,7 @@ write_setting() { # write_setting <file> <key> <value>
 cmd_settings() {
   local key="${1:-}" row k scope def help
   if [ -z "$key" ]; then
-    printf 'machine: %s    sync repo: %s    (change via crate init / crate retire)\n\n' \
+    printf 'machine: %s    sync repo: %s    (change via satchel init / satchel retire)\n\n' \
       "$MACHINE" "${SYNC_URL:-none}"
     printf '%-28s %-22s %-8s %s\n' 'SETTING' 'VALUE' 'FROM' 'WHAT IT DOES'
     for row in "${SETTINGS_SPEC[@]}"; do
@@ -759,27 +759,27 @@ cmd_settings() {
       src="$(settings_source "$k")"
       if [ "$src" = default ]; then
         case "$k" in
-          CRATE_ENGINE) val="$(engine 2>/dev/null || echo '?')"; src="detected" ;;
-          CRATE_UID|CRATE_GID) : ;;                      # resolved in load_config
+          SATCHEL_ENGINE) val="$(engine 2>/dev/null || echo '?')"; src="detected" ;;
+          SATCHEL_UID|SATCHEL_GID) : ;;                      # resolved in load_config
           *) val="$def" ;;
         esac
       fi
       printf '%-28s %-22s %-8s %s\n' "$k" "${val:-''}" "$src" "$help ${scope:+[$scope]}"
     done
-    printf "\nchange one:  crate settings <SETTING> <value>\n"
+    printf "\nchange one:  satchel settings <SETTING> <value>\n"
     printf "             preference settings apply to the whole fleet; add --local to pin\n"
     printf "             just this machine, or set '' as the value to clear one\n"
     return 0
   fi
 
-  [ $# -ge 2 ] || die "usage: crate settings [<SETTING> <value> [--local]]"
+  [ $# -ge 2 ] || die "usage: satchel settings [<SETTING> <value> [--local]]"
   local value="$2" local_flag="${3:-}"
   local found=""
   for row in "${SETTINGS_SPEC[@]}"; do
     IFS='|' read -r k scope def help <<< "$row"
     [ "$k" = "$key" ] && { found="$scope"; break; }
   done
-  [ -n "$found" ] || die "unknown setting '$key' — run 'crate settings' to see them"
+  [ -n "$found" ] || die "unknown setting '$key' — run 'satchel settings' to see them"
 
   if [ "$found" = pref ] && [ "$local_flag" != "--local" ]; then
     if ! sync_ready; then
@@ -799,7 +799,7 @@ cmd_settings() {
 # ----------------------------------------------------------------- retire
 
 cmd_retire() {
-  sync_ready || die "sync is not set up — run 'crate init' first"
+  sync_ready || die "sync is not set up — run 'satchel init' first"
   quiet_pull
   local target="${1:-}"
   if [ -z "$target" ]; then
@@ -838,16 +838,16 @@ cmd_retire() {
   git_sync rm -rq -- "machines/$target"
   git_sync commit -q -m "retire $target"
   if has_upstream && ! git_sync pull --rebase -q; then
-    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'crate sync'"
+    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'satchel sync'"
   fi
-  git_sync push -q -u origin HEAD || warn "could not push — run 'crate sync' when the remote is reachable"
+  git_sync push -q -u origin HEAD || warn "could not push — run 'satchel sync' when the remote is reachable"
   info "'$target' retired from the fleet"
 
   if [ "$target" = "$MACHINE" ]; then
-    warn "that was this machine — its local state ($CRATE_DIR) still exists: config, agent logins, the sync clone"
+    warn "that was this machine — its local state ($SATCHEL_DIR) still exists: config, agent logins, the sync clone"
     if confirm "delete the local state too? (agent logins in sessions will be lost)"; then
-      rm -rf "$CRATE_DIR"
-      info "removed $CRATE_DIR — this machine is fully retired"
+      rm -rf "$SATCHEL_DIR"
+      info "removed $SATCHEL_DIR — this machine is fully retired"
     fi
   fi
 }
@@ -855,7 +855,7 @@ cmd_retire() {
 # ----------------------------------------------------------------- status
 
 cmd_status() {
-  printf 'ContextCrate %s on %s\n' "$CRATE_VERSION" "$MACHINE"
+  printf 'Satchel %s on %s\n' "$SATCHEL_VERSION" "$MACHINE"
   local e img="not built"
   e="$(engine 2>/dev/null || true)"
   if [ -n "$e" ] && "$e" image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -866,7 +866,7 @@ cmd_status() {
   printf '  engine: %s, image: %s\n' "${e:-none}" "$img"
 
   if ! sync_ready; then
-    printf '  sync: not set up (run crate init)\n'
+    printf '  sync: not set up (run satchel init)\n'
   else
     printf '  sync: %s\n' "$SYNC_URL"
     printf '  last sync commit: %s\n' "$(git_sync log -1 --format='%h %s (%cr)' 2>/dev/null || echo none)"
@@ -918,7 +918,7 @@ d_fail() { printf '  FAIL  %s\n' "$*"; DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1));
 
 cmd_doctor() {
   DOCTOR_PROBLEMS=0
-  printf 'crate %s doctor — machine %s\n' "$CRATE_VERSION" "$MACHINE"
+  printf 'satchel %s doctor — machine %s\n' "$SATCHEL_VERSION" "$MACHINE"
 
   local missing="" c
   for c in git jq curl ssh; do command -v "$c" >/dev/null 2>&1 || missing="$missing $c"; done
@@ -935,15 +935,15 @@ cmd_doctor() {
     local av; av="$(image_agent_versions)"
     d_ok "image: built${av:+ ($av)}"
   else
-    d_warn "image not built yet — builds on first session, or run 'crate update'"
+    d_warn "image not built yet — builds on first session, or run 'satchel update'"
   fi
 
-  if have_pubkey; then d_ok "ssh key: present"; else d_warn "no ssh key — 'crate key' makes one"; fi
+  if have_pubkey; then d_ok "ssh key: present"; else d_warn "no ssh key — 'satchel key' makes one"; fi
 
   if [ -z "$SYNC_URL" ]; then
-    d_warn "sync not configured — 'crate init' to join a fleet"
+    d_warn "sync not configured — 'satchel init' to join a fleet"
   elif ! sync_ready; then
-    d_fail "SYNC_URL is set but there is no clone at $SYNC_DIR — rerun 'crate init'"
+    d_fail "SYNC_URL is set but there is no clone at $SYNC_DIR — rerun 'satchel init'"
   else
     if timeout 10 git -C "$SYNC_DIR" ls-remote origin HEAD >/dev/null 2>&1; then
       d_ok "sync remote reachable"
@@ -954,16 +954,16 @@ cmd_doctor() {
        && [ -z "$(git_sync status --porcelain 2>/dev/null)" ]; then
       d_ok "sync tree clean"
     else
-      d_warn "uncommitted changes in the sync clone — next session end or 'crate sync' commits them"
+      d_warn "uncommitted changes in the sync clone — next session end or 'satchel sync' commits them"
     fi
     if has_upstream; then
       local counts behind ahead
       counts="$(git_sync rev-list --left-right --count '@{u}...HEAD' 2>/dev/null || echo '0 0')"
       behind="${counts%%[[:space:]]*}"; ahead="${counts##*[[:space:]]}"
-      if [ "$behind" -gt 0 ]; then d_warn "behind origin by $behind commit(s) — 'crate sync' to pull"; else d_ok "up to date with origin"; fi
-      [ "$ahead" -gt 0 ] && d_warn "ahead of origin by $ahead unpushed commit(s) — 'crate sync' to push"
+      if [ "$behind" -gt 0 ]; then d_warn "behind origin by $behind commit(s) — 'satchel sync' to pull"; else d_ok "up to date with origin"; fi
+      [ "$ahead" -gt 0 ] && d_warn "ahead of origin by $ahead unpushed commit(s) — 'satchel sync' to push"
     else
-      d_warn "no upstream yet — the first 'crate sync' sets it"
+      d_warn "no upstream yet — the first 'satchel sync' sets it"
     fi
   fi
 
@@ -1005,7 +1005,7 @@ SNAP_FILTER='.[0] | {
 }'
 
 cmd_snapshot() {
-  local name="${1:-}"; [ -n "$name" ] || die "usage: crate snapshot <container>"
+  local name="${1:-}"; [ -n "$name" ] || die "usage: satchel snapshot <container>"
   need_cmd jq
   mkdir -p "$SNAP_DIR"
   "$(engine)" inspect "$name" | jq "$SNAP_FILTER" > "$SNAP_DIR/$name.json" \
@@ -1014,10 +1014,10 @@ cmd_snapshot() {
 }
 
 cmd_drift() {
-  local name="${1:-}"; [ -n "$name" ] || die "usage: crate drift <container>"
+  local name="${1:-}"; [ -n "$name" ] || die "usage: satchel drift <container>"
   need_cmd jq
   local snap="$SNAP_DIR/$name.json"
-  [ -f "$snap" ] || die "no snapshot for '$name' — run 'crate snapshot $name' first"
+  [ -f "$snap" ] || die "no snapshot for '$name' — run 'satchel snapshot $name' first"
   local live; live="$(mktemp)"
   "$(engine)" inspect "$name" | jq "$SNAP_FILTER" > "$live" || die "could not inspect container '$name'"
   if diff -u --label "snapshot" --label "live" "$snap" "$live"; then
@@ -1040,19 +1040,19 @@ cmd_update() {
   self="$(readlink -f "$0")"
   # Resolve main to a commit first: the raw 'main' URL sits behind a ~5 min
   # CDN cache and will happily serve a stale script; a by-SHA URL cannot.
-  sha="$(curl -fsSL "https://api.github.com/repos/$CRATE_REPO/commits/main" 2>/dev/null | jq -r '.sha // empty')" || sha=""
+  sha="$(curl -fsSL "https://api.github.com/repos/$SATCHEL_REPO/commits/main" 2>/dev/null | jq -r '.sha // empty')" || sha=""
   ref="${sha:-main}"
   [ -z "$sha" ] && warn "could not resolve latest commit via the GitHub API — falling back to 'main' (may be up to ~5 min stale)"
   tmp="$(mktemp)"
-  curl -fsSL "https://raw.githubusercontent.com/$CRATE_REPO/$ref/crate" -o "$tmp" || die "download failed"
+  curl -fsSL "https://raw.githubusercontent.com/$SATCHEL_REPO/$ref/satchel" -o "$tmp" || die "download failed"
   bash -n "$tmp" || die "downloaded script does not parse — not installing it"
   if cmp -s "$tmp" "$self"; then
     rm -f "$tmp"
-    info "crate script already up to date (${sha:0:7})"
+    info "satchel script already up to date (${sha:0:7})"
   else
     chmod 755 "$tmp"
     mv "$tmp" "$self" 2>/dev/null || { need_cmd sudo; sudo mv "$tmp" "$self"; }
-    info "crate updated to commit ${sha:0:7} ($self)"
+    info "satchel updated to commit ${sha:0:7} ($self)"
   fi
   # The rebuild IS the agent update: --pull + fresh npm install bakes in the
   # latest claude/codex, which sessions can't do for themselves.
@@ -1073,46 +1073,46 @@ image_agent_versions() { # prints "claude X, codex Y" or nothing
 
 cmd_help() {
   cat <<EOF
-ContextCrate $CRATE_VERSION — AI coding agents in disposable containers.
+Satchel $SATCHEL_VERSION — AI coding agents in disposable containers.
 
-usage: crate [--host] <command> [args]
+usage: satchel [--host] <command> [args]
 
 sessions
-  crate claude [args]        run Claude Code in a throwaway container, in \$PWD
-  crate codex [args]         same for Codex
+  satchel claude [args]        run Claude Code in a throwaway container, in \$PWD
+  satchel codex [args]         same for Codex
   --host                     Host Session: sandbox off, host / at /host, root
                              (troubleshooting the machine itself — see CONTEXT.md)
   --unsafe-home              allow a session in \$HOME or above (mounts it ALL,
                              SSH keys and tokens included — normally refused)
                              both flags work before or after the agent name:
-                             'crate --host claude' == 'claude --host'
+                             'satchel --host claude' == 'claude --host'
 
 fleet
-  crate init                 name this machine, connect the Sync Repo
-  crate sync                 commit, pull, push the Sync Repo
-  crate status               fleet roster, handoffs, MCP servers, skills
-  crate key                  show this machine's SSH public key (makes one if needed)
-  crate retire [machine]     remove a machine from the fleet (picks from a list)
-  crate doctor               check this machine's whole setup and say what's wrong
+  satchel init                 name this machine, connect the Sync Repo
+  satchel sync                 commit, pull, push the Sync Repo
+  satchel status               fleet roster, handoffs, MCP servers, skills
+  satchel key                  show this machine's SSH public key (makes one if needed)
+  satchel retire [machine]     remove a machine from the fleet (picks from a list)
+  satchel doctor               check this machine's whole setup and say what's wrong
 
 setup
-  crate import claude|codex  copy this host's agent login into crate's sessions
-  crate mcp list|add|remove  manage the MCP Registry (synced to every machine);
+  satchel import claude|codex  copy this host's agent login into satchel's sessions
+  satchel mcp list|add|remove  manage the MCP Registry (synced to every machine);
                              bare 'add' or 'remove' walks through it interactively
-  crate settings             show every setting; 'crate settings <KEY> <value>'
+  satchel settings             show every setting; 'satchel settings <KEY> <value>'
                              sets it fleet-wide (--local: this machine only)
 
 host containers (Unraid repair helper)
-  crate snapshot <name>      save a container's config to compare against later
-  crate drift <name>         diff live config vs snapshot, offer a restart
+  satchel snapshot <name>      save a container's config to compare against later
+  satchel drift <name>         diff live config vs snapshot, offer a restart
 
-  crate update               self-update from git main + rebuild the image
-  crate version
+  satchel update               self-update from git main + rebuild the image
+  satchel version
 
 Skills: drop a folder into <sync>/skills/claude/ (or ask the agent to install
 one mid-session) and every machine's Claude sessions have it after a sync.
 skills/codex/ syncs too, but codex has no native skills system yet — those
-folders wait until crate grows a codex materializer (docs/adr/0003).
+folders wait until satchel grows a codex materializer (docs/adr/0003).
 EOF
 }
 
@@ -1127,7 +1127,7 @@ main() {
       *) break ;;
     esac
   done
-  [ -n "${CRATE_HOST:-}" ] && HOST_MODE=1
+  [ -n "${SATCHEL_HOST:-}" ] && HOST_MODE=1
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
     claude|codex)      cmd_session "$cmd" "$@" ;;
@@ -1143,9 +1143,9 @@ main() {
     snapshot)          cmd_snapshot "$@" ;;
     drift)             cmd_drift "$@" ;;
     update)            cmd_update "$@" ;;
-    version|--version) printf 'crate %s\n' "$CRATE_VERSION" ;;
+    version|--version) printf 'satchel %s\n' "$SATCHEL_VERSION" ;;
     help|--help|-h)    cmd_help ;;
-    *)                 die "unknown command '$cmd' — try 'crate help'" ;;
+    *)                 die "unknown command '$cmd' — try 'satchel help'" ;;
   esac
 }
 

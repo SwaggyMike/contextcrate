@@ -1,4 +1,4 @@
-# ContextCrate
+# Satchel
 
 Run AI coding agents (Claude Code, Codex) in disposable Docker/Podman
 containers, with session handoffs, MCP servers, and skills synced between
@@ -11,8 +11,8 @@ production-grade: simple, readable, boring.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/SwaggyMike/contextcrate/main/install.sh | bash
-crate init
+curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh | bash
+satchel init
 ```
 
 `init` names the machine and connects your private Sync Repo (self-hosted
@@ -24,7 +24,7 @@ claude        # Claude Code in a throwaway container, scoped to this directory
 ```
 
 The container sees only the project directory, runs as a non-root user, and
-is deleted when the session ends. Log in once (or `crate import claude` to
+is deleted when the session ends. Log in once (or `satchel import claude` to
 copy the host's login); every session after that starts authenticated. When
 a session ends, the agent writes a short handoff; the next session on that
 project — on any machine — picks it up.
@@ -33,19 +33,19 @@ project — on any machine — picks it up.
 
 | command | what it does |
 | --- | --- |
-| `crate claude` / `crate codex` | run a session in `$PWD` (the `claude`/`codex` shims do the same) |
-| `crate --host claude` | Host Session: sandbox off, host `/` at `/host` — for fixing the machine itself |
-| `crate init` | name this machine, connect the Sync Repo |
-| `crate sync` | commit, pull, push the Sync Repo |
-| `crate status` | fleet roster, handoffs, MCP servers, skills |
-| `crate key` | show this machine's SSH public key (generates one if needed) |
-| `crate retire [machine]` | remove a machine from the fleet — interactive picker without a name |
-| `crate import claude\|codex` | copy the host's agent login into crate's sessions |
-| `crate mcp add\|list\|remove` | manage the MCP Registry (configured once, wired into every session) |
-| `crate settings` | show every setting and its value; `crate settings <KEY> <value>` sets it fleet-wide, `--local` for one machine |
-| `crate doctor` | check this machine's setup end to end — engine, image, key, sync, MCP endpoints |
-| `crate snapshot <name>` / `crate drift <name>` | snapshot a host container's config, later diff and restart — for UIs that regenerate containers |
-| `crate update` | self-update from `main` and rebuild the agent image |
+| `satchel claude` / `satchel codex` | run a session in `$PWD` (the `claude`/`codex` shims do the same) |
+| `satchel --host claude` | Host Session: sandbox off, host `/` at `/host` — for fixing the machine itself |
+| `satchel init` | name this machine, connect the Sync Repo |
+| `satchel sync` | commit, pull, push the Sync Repo |
+| `satchel status` | fleet roster, handoffs, MCP servers, skills |
+| `satchel key` | show this machine's SSH public key (generates one if needed) |
+| `satchel retire [machine]` | remove a machine from the fleet — interactive picker without a name |
+| `satchel import claude\|codex` | copy the host's agent login into satchel's sessions |
+| `satchel mcp add\|list\|remove` | manage the MCP Registry (configured once, wired into every session) |
+| `satchel settings` | show every setting and its value; `satchel settings <KEY> <value>` sets it fleet-wide, `--local` for one machine |
+| `satchel doctor` | check this machine's setup end to end — engine, image, key, sync, MCP endpoints |
+| `satchel snapshot <name>` / `satchel drift <name>` | snapshot a host container's config, later diff and restart — for UIs that regenerate containers |
+| `satchel update` | self-update from `main` and rebuild the agent image |
 
 ## What syncs, what doesn't
 

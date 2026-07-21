@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# ContextCrate installer:
-#   curl -fsSL https://raw.githubusercontent.com/SwaggyMike/contextcrate/main/install.sh | bash
+# Satchel installer:
+#   curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh | bash
 #
-# Installs the `crate` script plus the `claude` and `codex` shims (thin
-# wrappers that exec `crate claude` / `crate codex`, so sessions feel like
+# Installs the `satchel` script plus the `claude` and `codex` shims (thin
+# wrappers that exec `satchel claude` / `satchel codex`, so sessions feel like
 # the real CLIs).
 set -euo pipefail
 
-RAW="https://raw.githubusercontent.com/SwaggyMike/contextcrate/main"
+RAW="https://raw.githubusercontent.com/SwaggyMike/satchel/main"
 
 say() { printf 'install: %s\n' "$*" >&2; }
 die() { printf 'install: error: %s\n' "$*" >&2; exit 1; }
@@ -24,25 +24,25 @@ else BIN="$HOME/.local/bin"; mkdir -p "$BIN"; fi
 # When run from a checkout, install the local copy; otherwise download main.
 tmp="$(mktemp)"
 src="$(cd "$(dirname "${BASH_SOURCE[0]:-/nonexistent}")" 2>/dev/null && pwd || true)"
-if [ -n "$src" ] && [ -f "$src/crate" ]; then
-  cp "$src/crate" "$tmp"
+if [ -n "$src" ] && [ -f "$src/satchel" ]; then
+  cp "$src/satchel" "$tmp"
   say "installing from local checkout"
 else
-  curl -fsSL "$RAW/crate" -o "$tmp"
+  curl -fsSL "$RAW/satchel" -o "$tmp"
 fi
-bash -n "$tmp" || die "downloaded crate script does not parse"
-install -m 755 "$tmp" "$BIN/crate"
+bash -n "$tmp" || die "downloaded satchel script does not parse"
+install -m 755 "$tmp" "$BIN/satchel"
 rm -f "$tmp"
-say "installed $BIN/crate"
+say "installed $BIN/satchel"
 
 for agent in claude codex; do
   shim="$BIN/$agent"
-  if [ -e "$shim" ] && ! grep -q "exec crate" "$shim" 2>/dev/null; then
-    say "SKIPPED shim '$agent': $shim exists and is not a crate shim."
-    say "  remove it (or the host CLI it points to) and rerun to route '$agent' through crate."
+  if [ -e "$shim" ] && ! grep -q "exec satchel" "$shim" 2>/dev/null; then
+    say "SKIPPED shim '$agent': $shim exists and is not a satchel shim."
+    say "  remove it (or the host CLI it points to) and rerun to route '$agent' through satchel."
     continue
   fi
-  printf '#!/usr/bin/env bash\nexec crate %s "$@"\n' "$agent" > "$shim"
+  printf '#!/usr/bin/env bash\nexec satchel %s "$@"\n' "$agent" > "$shim"
   chmod 755 "$shim"
   say "installed shim $shim"
 done
@@ -60,18 +60,17 @@ esac
 # so give init the real terminal; skip when non-interactive (CI) or already
 # set up (this is an update run).
 initialized=0
-if [ -f "$HOME/.contextcrate/config" ]; then
+if [ -f "$HOME/.satchel/config" ]; then
   SYNC_URL=""
-  # crate's own config, plain sourceable bash
-  . "$HOME/.contextcrate/config" 2>/dev/null || true
+  . "$HOME/.satchel/config" 2>/dev/null || true
   # a configured sync URL without a clone means a previous init didn't finish
-  if [ -z "$SYNC_URL" ] || [ -d "$HOME/.contextcrate/sync/.git" ]; then initialized=1; fi
+  if [ -z "$SYNC_URL" ] || [ -d "$HOME/.satchel/sync/.git" ]; then initialized=1; fi
 fi
 if [ "$initialized" -eq 1 ]; then
-  say "done — already initialized ('crate status' to check the fleet)"
+  say "done — already initialized ('satchel status' to check the fleet)"
 elif { : </dev/tty; } 2>/dev/null; then
   say "starting setup…"
-  "$BIN/crate" init </dev/tty || say "setup did not finish — fix the issue above and run: crate init"
+  "$BIN/satchel" init </dev/tty || say "setup did not finish — fix the issue above and run: satchel init"
 else
-  say "done. next: crate init"
+  say "done. next: satchel init"
 fi
