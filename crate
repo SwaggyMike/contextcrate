@@ -84,6 +84,15 @@ git_sync() { git -C "$SYNC_DIR" "$@"; }
 # first push (-u) creates it.
 has_upstream() { git_sync rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; }
 
+# Crate owns the Sync Repo's commits, so they must work on a machine where
+# git was never configured: give the clone a repo-local identity named after
+# the machine. A user's global identity, if present, wins.
+ensure_sync_identity() {
+  git_sync config user.name  >/dev/null 2>&1 || git_sync config user.name "crate on $MACHINE"
+  git_sync config user.email >/dev/null 2>&1 || git_sync config user.email "crate@$MACHINE"
+  return 0
+}
+
 # ------------------------------------------------------------------ image
 
 ensure_image() {
@@ -312,6 +321,7 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
 
 cmd_sync() {
   sync_ready || die "sync is not set up — run 'crate init' first"
+  ensure_sync_identity
   git_sync add -A
   if ! git_sync diff --cached --quiet; then
     git_sync commit -q -m "sync from $MACHINE"
@@ -334,6 +344,7 @@ quiet_pull() { # best-effort, at session start; offline is fine
 
 quiet_push_session() { # best-effort, at session end; carries handoff + skill edits
   sync_ready || return 0
+  ensure_sync_identity
   git_sync add -A
   git_sync diff --cached --quiet && return 0
   git_sync commit -q -m "session: $1 on $MACHINE" || return 0
@@ -501,6 +512,7 @@ cmd_init() {
     touch "$SYNC_DIR/machines/$name/handoffs/.gitkeep" \
           "$SYNC_DIR/skills/claude/.gitkeep" "$SYNC_DIR/skills/codex/.gitkeep"
     [ -f "$SYNC_TOKENS_FILE" ] && chmod 600 "$SYNC_TOKENS_FILE"
+    ensure_sync_identity
     git_sync add -A
     git_sync diff --cached --quiet || git_sync commit -q -m "add machine $name"
     # This push is also the write-access check: a read-only deploy key fails
@@ -592,6 +604,7 @@ cmd_retire() {
   fi
   confirm "retire '$target' — delete its folder from the Sync Repo? (git history keeps it)" || { info "cancelled"; return 0; }
 
+  ensure_sync_identity
   git_sync rm -rq -- "machines/$target"
   git_sync commit -q -m "retire $target"
   if has_upstream && ! git_sync pull --rebase -q; then
