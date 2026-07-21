@@ -43,6 +43,7 @@ project — on any machine — picks it up.
 | `crate import claude\|codex` | copy the host's agent login into crate's sessions |
 | `crate mcp add\|list\|remove` | manage the MCP Registry (configured once, wired into every session) |
 | `crate settings` | show every setting and its value; `crate settings <KEY> <value>` sets it fleet-wide, `--local` for one machine |
+| `crate doctor` | check this machine's setup end to end — engine, image, key, sync, MCP endpoints |
 | `crate snapshot <name>` / `crate drift <name>` | snapshot a host container's config, later diff and restart — for UIs that regenerate containers |
 | `crate update` | self-update from `main` and rebuild the agent image |
 

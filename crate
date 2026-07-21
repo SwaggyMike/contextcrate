@@ -837,6 +837,86 @@ cmd_status() {
   return 0
 }
 
+# ----------------------------------------------------------------- doctor
+
+d_ok()   { printf '  ok    %s\n' "$*"; }
+d_warn() { printf '  warn  %s\n' "$*"; }
+d_fail() { printf '  FAIL  %s\n' "$*"; DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1)); }
+
+cmd_doctor() {
+  DOCTOR_PROBLEMS=0
+  printf 'crate %s doctor — machine %s\n' "$CRATE_VERSION" "$MACHINE"
+
+  local missing="" c
+  for c in git jq curl ssh; do command -v "$c" >/dev/null 2>&1 || missing="$missing $c"; done
+  if [ -z "$missing" ]; then d_ok "host tools: git, jq, curl, ssh"; else d_fail "missing host tools:$missing"; fi
+
+  local e=""
+  if e="$(engine 2>/dev/null)" && "$e" info >/dev/null 2>&1; then
+    d_ok "engine: $e"
+  else
+    d_fail "no working container engine — install/start docker or podman"
+  fi
+
+  if [ -n "$e" ] && "$e" image inspect "$IMAGE" >/dev/null 2>&1; then
+    local av; av="$(image_agent_versions)"
+    d_ok "image: built${av:+ ($av)}"
+  else
+    d_warn "image not built yet — builds on first session, or run 'crate update'"
+  fi
+
+  if have_pubkey; then d_ok "ssh key: present"; else d_warn "no ssh key — 'crate key' makes one"; fi
+
+  if [ -z "$SYNC_URL" ]; then
+    d_warn "sync not configured — 'crate init' to join a fleet"
+  elif ! sync_ready; then
+    d_fail "SYNC_URL is set but there is no clone at $SYNC_DIR — rerun 'crate init'"
+  else
+    if timeout 10 git -C "$SYNC_DIR" ls-remote origin HEAD >/dev/null 2>&1; then
+      d_ok "sync remote reachable"
+    else
+      d_fail "sync remote unreachable: $SYNC_URL (network? key removed from the git host?)"
+    fi
+    if git_sync diff --quiet 2>/dev/null && git_sync diff --cached --quiet 2>/dev/null \
+       && [ -z "$(git_sync status --porcelain 2>/dev/null)" ]; then
+      d_ok "sync tree clean"
+    else
+      d_warn "uncommitted changes in the sync clone — next session end or 'crate sync' commits them"
+    fi
+    if has_upstream; then
+      local counts behind ahead
+      counts="$(git_sync rev-list --left-right --count '@{u}...HEAD' 2>/dev/null || echo '0 0')"
+      behind="${counts%%[[:space:]]*}"; ahead="${counts##*[[:space:]]}"
+      if [ "$behind" -gt 0 ]; then d_warn "behind origin by $behind commit(s) — 'crate sync' to pull"; else d_ok "up to date with origin"; fi
+      [ "$ahead" -gt 0 ] && d_warn "ahead of origin by $ahead unpushed commit(s) — 'crate sync' to push"
+    else
+      d_warn "no upstream yet — the first 'crate sync' sets it"
+    fi
+  fi
+
+  if [ -f "$MCP_FILE" ]; then
+    local name url auth code
+    while IFS=$'\t' read -r name url auth; do
+      [ -n "$name" ] || continue
+      if [ "$auth" = "bearer" ] && [ -z "$(token_for "$name")" ]; then
+        d_warn "mcp '$name': no token on this machine — sessions will prompt for it"
+      fi
+      code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+      if [ "$code" != "000" ] && [ -n "$code" ]; then
+        d_ok "mcp '$name': endpoint answers (HTTP $code)"
+      else
+        d_fail "mcp '$name': unreachable ($url)"
+      fi
+    done < <(jq -r '.servers | to_entries[] | "\(.key)\t\(.value.url)\t\(.value.auth)"' "$MCP_FILE" 2>/dev/null)
+  fi
+
+  if [ "$DOCTOR_PROBLEMS" -eq 0 ]; then
+    info "no problems found"
+  else
+    die "$DOCTOR_PROBLEMS problem(s) — fix the FAIL lines above"
+  fi
+}
+
 # ------------------------------------------- container snapshot / drift
 
 # The subset of container config worth tracking: what a management UI
@@ -943,6 +1023,7 @@ fleet
   crate status               fleet roster, handoffs, MCP servers, skills
   crate key                  show this machine's SSH public key (makes one if needed)
   crate retire [machine]     remove a machine from the fleet (picks from a list)
+  crate doctor               check this machine's whole setup and say what's wrong
 
 setup
   crate import claude|codex  copy this host's agent login into crate's sessions
@@ -985,6 +1066,7 @@ main() {
     key)               cmd_key "$@" ;;
     retire)            cmd_retire "$@" ;;
     settings)          cmd_settings "$@" ;;
+    doctor)            cmd_doctor "$@" ;;
     mcp)               cmd_mcp "$@" ;;
     import)            cmd_import "$@" ;;
     snapshot)          cmd_snapshot "$@" ;;
