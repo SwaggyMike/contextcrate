@@ -801,7 +801,9 @@ host containers (Unraid repair helper)
   crate version
 
 Skills: drop a folder into <sync>/skills/claude/ (or ask the agent to install
-one mid-session) and every machine's sessions have it after a sync.
+one mid-session) and every machine's Claude sessions have it after a sync.
+skills/codex/ syncs too, but codex has no native skills system yet — those
+folders wait until crate grows a codex materializer (docs/adr/0003).
 EOF
 }
 
