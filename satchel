@@ -193,7 +193,7 @@ probe_mcp() {
 report_mcp_probe() { # report_mcp_probe <name> <url> <verdict> <ok_fn> <bad_fn>
   local name="$1" url="$2" verdict="$3" ok_fn="$4" bad_fn="$5"
   case "$verdict" in
-    ok:*)      "$ok_fn" "mcp '$name': endpoint answers (HTTP ${verdict#ok:})" ;;
+    ok:*)      "$ok_fn" "mcp '$name': endpoint is reachable" ;;
     notfound)  "$bad_fn" "mcp '$name': the host answers but nothing lives at that path — wrong URL? ($url)" ;;
     tls)       "$bad_fn" "mcp '$name': answers only with TLS verification off — self-signed certificate? agents may refuse it" ;;
     plainhttp) "$bad_fn" "mcp '$name': nothing speaks https there, but plain http answers — re-add with http:// instead" ;;
@@ -284,9 +284,11 @@ prompt_token() { # ADR 0002: offer synced (default) or local-only storage
   echo >&2
   read -r -s -p "  token for '$name' (input is hidden; Enter to skip): " token; echo >&2
   [ -n "$token" ] || { warn "no token given — '$name' will be configured without auth headers"; return 0; }
-  read -r -p "  keep the token [S]ynced to every machine, or [l]ocal to this one? " where
+  printf '  1) synced — available on every machine\n' >&2
+  printf '  2) local — this machine only\n' >&2
+  read -r -p "  store token where? [1]: " where
   echo >&2
-  if [[ "$where" == [lL]* ]]; then
+  if [ "$where" = "2" ]; then
     set_token "$name" "$token" "$LOCAL_TOKENS_FILE"
     info "token saved on this machine only"
   else
