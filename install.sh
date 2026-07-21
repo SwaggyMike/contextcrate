@@ -7,7 +7,7 @@
 # the real CLIs).
 set -euo pipefail
 
-RAW="https://raw.githubusercontent.com/SwaggyMike/satchel/main"
+RAW="https://raw.githubusercontent.com/SwaggyMike/satchel"
 
 say() { printf 'install: %s\n' "$*" >&2; }
 die() { printf 'install: error: %s\n' "$*" >&2; exit 1; }
@@ -22,18 +22,32 @@ if [ -w /usr/local/bin ]; then BIN=/usr/local/bin
 else BIN="$HOME/.local/bin"; mkdir -p "$BIN"; fi
 
 # When run from a checkout, install the local copy; otherwise download main.
+# The installed commit is recorded in ~/.satchel/script-sha so 'satchel
+# update' can show the commits each update brings.
 tmp="$(mktemp)"
+sha=""
 src="$(cd "$(dirname "${BASH_SOURCE[0]:-/nonexistent}")" 2>/dev/null && pwd || true)"
 if [ -n "$src" ] && [ -f "$src/satchel" ]; then
   cp "$src/satchel" "$tmp"
   say "installing from local checkout"
+  # Only a clean checkout's HEAD truthfully describes the installed script.
+  if git -C "$src" diff --quiet HEAD -- satchel 2>/dev/null; then
+    sha="$(git -C "$src" rev-parse HEAD 2>/dev/null || true)"
+  fi
 else
-  curl -fsSL "$RAW/satchel" -o "$tmp"
+  # Resolve main to a commit and download by SHA: the raw 'main' URL sits
+  # behind a ~5 min CDN cache and will happily serve a stale script.
+  sha="$(curl -fsSL "https://api.github.com/repos/SwaggyMike/satchel/commits/main" 2>/dev/null | jq -r '.sha // empty' || true)"
+  curl -fsSL "$RAW/${sha:-main}/satchel" -o "$tmp"
 fi
 bash -n "$tmp" || die "downloaded satchel script does not parse"
 install -m 755 "$tmp" "$BIN/satchel"
 rm -f "$tmp"
-say "installed $BIN/satchel"
+if [ -n "$sha" ]; then
+  mkdir -p "$HOME/.satchel"
+  printf '%s\n' "$sha" > "$HOME/.satchel/script-sha"
+fi
+say "installed $BIN/satchel${sha:+ (commit ${sha:0:7})}"
 
 for agent in claude codex; do
   shim="$BIN/$agent"
