@@ -24,7 +24,10 @@ claude        # Claude Code in a throwaway container, scoped to this directory
 ```
 
 The container sees only the project directory, runs as a non-root user, and
-is deleted when the session ends. Log in once (or `satchel import claude` to
+is deleted when the session ends — and the agent is told exactly that, so it
+answers "that file is outside the sandbox" instead of pretending your
+machine's files don't exist (in a Host Session it knows the machine lives
+at `/host`). Log in once (or `satchel import claude` to
 copy the host's login); every session after that starts authenticated. When
 a session ends, the agent writes a short handoff; the next session on that
 project — on any machine — picks it up.
@@ -45,7 +48,7 @@ project — on any machine — picks it up.
 | `satchel settings` | show every setting and its value; `satchel settings <KEY> <value>` sets it fleet-wide, `--local` for one machine |
 | `satchel doctor` | check this machine's setup end to end — engine, image, key, sync, MCP endpoints |
 | `satchel snapshot <name>` / `satchel drift <name>` | snapshot a host container's config, later diff and restart — for UIs that regenerate containers |
-| `satchel update` | self-update from `main` and rebuild the agent image |
+| `satchel update` | self-update from `main` (lists the commits it pulls in) and rebuild the agent image |
 
 ## What syncs, what doesn't
 
