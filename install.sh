@@ -12,16 +12,10 @@ RAW="https://raw.githubusercontent.com/SwaggyMike/satchel"
 say() { printf 'install: %s\n' "$*" >&2; }
 die() { printf 'install: error: %s\n' "$*" >&2; exit 1; }
 
-# Unraid-only messages get their own color and prefix: they concern the
-# flash-backed boot config, not the normal install flow, and should be
-# recognizable as such at a glance.
-if [ -t 2 ] && [ "${TERM:-}" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
-  U_ON=$'\033[1;33m'; U_OFF=$'\033[0m'
-else
-  U_ON=""; U_OFF=""
-fi
-usay() { printf '%s%s%s\n' "$U_ON" "install (unraid): $*" "$U_OFF" >&2; }
-uask() { printf '%s%s%s' "$U_ON" "install (unraid): $*" "$U_OFF" >&2; }
+# Unraid-only messages get their own prefix: they concern the flash-backed
+# boot config, not the normal install flow, and should read as such.
+usay() { printf 'install (unraid): %s\n' "$*" >&2; }
+uask() { printf 'install (unraid): %s' "$*" >&2; }
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v git  >/dev/null 2>&1 || die "git is required"
