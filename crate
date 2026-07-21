@@ -49,7 +49,23 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"
 }
 
+# The settings catalog — single source of truth for 'crate settings', the
+# config template, and what the setter accepts. Fields: KEY|scope|default|help.
+# 'pref' settings sync fleet-wide via settings.env in the Sync Repo; 'machine'
+# settings describe this box and stay in the local config.
+SETTINGS_SPEC=(
+  "CRATE_HANDOFF_MODEL_CLAUDE|pref|haiku|model that writes handoffs: haiku, sonnet, opus, fable, or a full model name; '' = the agent's default"
+  "CRATE_HANDOFF_MODEL_CODEX|pref||same for codex; '' = the agent's default"
+  "CRATE_ENGINE|machine||force docker or podman (default: auto-detect)"
+  "CRATE_UID|machine||user id inside session containers (default: your uid; 1000 if root)"
+  "CRATE_GID|machine||group id inside session containers (default: CRATE_UID)"
+)
+SYNC_SETTINGS_FILE="$SYNC_DIR/settings.env"
+
 load_config() {
+  # Precedence: built-in default < synced settings.env < local config.
+  # shellcheck disable=SC1090
+  [ -f "$SYNC_SETTINGS_FILE" ] && . "$SYNC_SETTINGS_FILE"
   # shellcheck disable=SC1090
   [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
   MACHINE="${MACHINE:-$(hostname -s)}"
@@ -512,12 +528,15 @@ cmd_init() {
 
   {
     printf '# ContextCrate config — plain bash, sourced by crate.\n'
+    printf "# See and change settings with 'crate settings'; this file is the\n"
+    printf '# machine-local layer (it wins over the synced settings.env).\n'
     printf 'MACHINE=%q\n' "$name"
     printf 'SYNC_URL=%q\n' "$url"
-    printf '# CRATE_UID=1000  # user inside session containers (default: your uid; 1000 if root)\n'
-    printf '# CRATE_ENGINE=docker  # force docker or podman\n'
-    printf "# CRATE_HANDOFF_MODEL_CLAUDE=haiku  # model that writes handoffs; ''=the agent's default\n"
-    printf '# CRATE_HANDOFF_MODEL_CODEX=  # same for codex\n'
+    local row k scope def help
+    for row in "${SETTINGS_SPEC[@]}"; do
+      IFS='|' read -r k scope def help <<< "$row"
+      [ "$scope" = machine ] && printf '# %s=%s  # %s\n' "$k" "$def" "$help"
+    done
   } > "$CONFIG_FILE"
   MACHINE="$name"; SYNC_URL="$url"
 
@@ -593,6 +612,68 @@ cmd_import() {
       ;;
   esac
   info "imported the host's $agent login — sessions will start authenticated (credentials stay on this machine, never synced)"
+}
+
+# --------------------------------------------------------------- settings
+
+settings_source() { # settings_source <key> → local | synced | default
+  if [ -f "$CONFIG_FILE" ] && grep -q "^$1=" "$CONFIG_FILE"; then echo local
+  elif [ -f "$SYNC_SETTINGS_FILE" ] && grep -q "^$1=" "$SYNC_SETTINGS_FILE"; then echo synced
+  else echo default; fi
+}
+
+write_setting() { # write_setting <file> <key> <value>
+  local f="$1" k="$2" v="$3"
+  touch "$f"
+  { grep -v "^$k=" "$f" || true; printf '%s=%q\n' "$k" "$v"; } > "$f.tmp"
+  mv "$f.tmp" "$f"
+}
+
+cmd_settings() {
+  local key="${1:-}" row k scope def help
+  if [ -z "$key" ]; then
+    printf 'machine: %s    sync repo: %s    (change via crate init / crate retire)\n\n' \
+      "$MACHINE" "${SYNC_URL:-none}"
+    printf '%-28s %-22s %-8s %s\n' 'SETTING' 'VALUE' 'FROM' 'WHAT IT DOES'
+    for row in "${SETTINGS_SPEC[@]}"; do
+      IFS='|' read -r k scope def help <<< "$row"
+      local val="${!k-}" src
+      src="$(settings_source "$k")"
+      if [ "$src" = default ]; then
+        case "$k" in
+          CRATE_ENGINE) val="$(engine 2>/dev/null || echo '?')"; src="detected" ;;
+          CRATE_UID|CRATE_GID) : ;;                      # resolved in load_config
+          *) val="$def" ;;
+        esac
+      fi
+      printf '%-28s %-22s %-8s %s\n' "$k" "${val:-''}" "$src" "$help ${scope:+[$scope]}"
+    done
+    printf "\nset one:  crate settings <SETTING> <value>     ('' as value = explicit empty)\n"
+    printf "          preference settings sync to every machine; add --local to pin just this one\n"
+    return 0
+  fi
+
+  [ $# -ge 2 ] || die "usage: crate settings [<SETTING> <value> [--local]]"
+  local value="$2" local_flag="${3:-}"
+  local found=""
+  for row in "${SETTINGS_SPEC[@]}"; do
+    IFS='|' read -r k scope def help <<< "$row"
+    [ "$k" = "$key" ] && { found="$scope"; break; }
+  done
+  [ -n "$found" ] || die "unknown setting '$key' — run 'crate settings' to see them"
+
+  if [ "$found" = pref ] && [ "$local_flag" != "--local" ]; then
+    if ! sync_ready; then
+      warn "sync is not set up — saving '$key' locally instead"
+      write_setting "$CONFIG_FILE" "$key" "$value"
+    else
+      write_setting "$SYNC_SETTINGS_FILE" "$key" "$value"
+      info "'$key' set for the whole fleet — travels on the next sync (session end or 'crate sync')"
+    fi
+  else
+    write_setting "$CONFIG_FILE" "$key" "$value"
+    info "'$key' set for this machine only"
+  fi
 }
 
 # ----------------------------------------------------------------- retire
@@ -792,6 +873,8 @@ fleet
 setup
   crate import claude|codex  copy this host's agent login into crate's sessions
   crate mcp list|add|remove  manage the MCP Registry (synced to every machine)
+  crate settings             show every setting; 'crate settings <KEY> <value>'
+                             sets it fleet-wide (--local: this machine only)
 
 host containers (Unraid repair helper)
   crate snapshot <name>      save a container's config to compare against later
@@ -821,6 +904,7 @@ main() {
     status)            cmd_status "$@" ;;
     key)               cmd_key "$@" ;;
     retire)            cmd_retire "$@" ;;
+    settings)          cmd_settings "$@" ;;
     mcp)               cmd_mcp "$@" ;;
     import)            cmd_import "$@" ;;
     snapshot)          cmd_snapshot "$@" ;;
