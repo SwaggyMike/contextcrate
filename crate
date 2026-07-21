@@ -1,0 +1,645 @@
+#!/usr/bin/env bash
+# crate — ContextCrate: run AI coding agents (Claude Code, Codex) in
+# disposable containers, with handoffs, MCP servers, and skills synced
+# between machines through a private git repo.
+#
+# One script, no daemon, plain files. See CONTEXT.md for the vocabulary
+# (Session, Sync Repo, Handoff, MCP Registry, Skill Library, Host Session)
+# and docs/adr/ for why things are the way they are.
+set -euo pipefail
+
+CRATE_VERSION="2.0.0"
+CRATE_RAW_URL="https://raw.githubusercontent.com/SwaggyMike/contextcrate/main"
+
+CRATE_DIR="${CRATE_DIR:-$HOME/.contextcrate}"
+CONFIG_FILE="$CRATE_DIR/config"
+SYNC_DIR="$CRATE_DIR/sync"
+HOMES_DIR="$CRATE_DIR/home"
+SNAP_DIR="$CRATE_DIR/snapshots"
+LOCAL_TOKENS_FILE="$CRATE_DIR/mcp-tokens.local.env"
+IMAGE="localhost/contextcrate:latest"
+
+# Set by load_config / flags.
+MACHINE=""
+SYNC_URL=""
+CRATE_UID=""
+CRATE_GID=""
+HOST_MODE=0
+ENGINE=""
+
+# ---------------------------------------------------------------- helpers
+
+info() { printf 'crate: %s\n' "$*" >&2; }
+warn() { printf 'crate: warning: %s\n' "$*" >&2; }
+die()  { printf 'crate: error: %s\n' "$*" >&2; exit 1; }
+
+confirm() { # confirm "question"  → returns 0 on yes
+  local reply
+  read -r -p "$1 [y/N] " reply
+  [[ "$reply" == [yY]* ]]
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"
+}
+
+load_config() {
+  # shellcheck disable=SC1090
+  [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+  MACHINE="${MACHINE:-$(hostname -s)}"
+  local uid; uid="$(id -u)"
+  # Never run agents as root inside the container; on root hosts (Unraid)
+  # fall back to 1000:1000. Override with CRATE_UID/CRATE_GID in the config.
+  if [ -z "$CRATE_UID" ]; then
+    if [ "$uid" -eq 0 ]; then CRATE_UID=1000; CRATE_GID=1000
+    else CRATE_UID="$uid"; CRATE_GID="$(id -g)"; fi
+  fi
+  CRATE_GID="${CRATE_GID:-$CRATE_UID}"
+}
+
+sync_ready() { [ -n "$SYNC_URL" ] && [ -d "$SYNC_DIR/.git" ]; }
+
+engine() {
+  if [ -z "$ENGINE" ]; then
+    if [ -n "${CRATE_ENGINE:-}" ]; then ENGINE="$CRATE_ENGINE"
+    elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then ENGINE=docker
+    elif command -v podman >/dev/null 2>&1; then ENGINE=podman
+    else die "neither docker nor podman is available"
+    fi
+  fi
+  printf '%s' "$ENGINE"
+}
+
+podman_rootless() {
+  [ "$(engine)" = podman ] && [ "$(id -u)" -ne 0 ]
+}
+
+slugify() { # project dir name → safe file name
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'
+}
+
+git_sync() { git -C "$SYNC_DIR" "$@"; }
+
+# A freshly cloned empty Sync Repo has no upstream yet: skip pulls until the
+# first push (-u) creates it.
+has_upstream() { git_sync rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; }
+
+# ------------------------------------------------------------------ image
+
+ensure_image() {
+  local e; e="$(engine)"
+  "$e" image inspect "$IMAGE" >/dev/null 2>&1 && return 0
+  info "container image not found — building it (first run only, takes a few minutes)"
+  build_image
+}
+
+build_image() {
+  local e ctx; e="$(engine)"
+  ctx="$(mktemp -d)"
+  # The whole environment agents run in. Agent CLIs are baked in; logins,
+  # transcripts, and skills live in mounts, so rebuilding is always safe.
+  "$e" build --pull -t "$IMAGE" -f - "$ctx" <<'DOCKERFILE'
+FROM docker.io/library/node:22-bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      git curl wget ca-certificates jq ripgrep less procps openssh-client \
+      python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
+ENV HOME=/home/crate
+RUN mkdir -p /home/crate && chmod 0777 /home/crate
+WORKDIR /home/crate
+DOCKERFILE
+  rm -rf "$ctx"
+  info "image built: $IMAGE"
+}
+
+# ------------------------------------------------------------ mcp registry
+
+MCP_FILE="$SYNC_DIR/mcp.json"
+SYNC_TOKENS_FILE="$SYNC_DIR/mcp-tokens.env"
+
+token_for() { # token_for <name> → prints token or nothing (local overrides synced)
+  local name="$1" line
+  for f in "$LOCAL_TOKENS_FILE" "$SYNC_TOKENS_FILE"; do
+    [ -f "$f" ] || continue
+    line="$(grep -m1 "^${name}=" "$f" || true)"
+    if [ -n "$line" ]; then printf '%s' "${line#*=}"; return 0; fi
+  done
+  return 0
+}
+
+set_token() { # set_token <name> <token> <file>
+  local name="$1" token="$2" f="$3"
+  touch "$f" && chmod 600 "$f"
+  grep -v "^${name}=" "$f" > "$f.tmp" || true
+  printf '%s=%s\n' "$name" "$token" >> "$f.tmp"
+  mv "$f.tmp" "$f" && chmod 600 "$f"
+}
+
+mcp_names() {
+  [ -f "$MCP_FILE" ] || return 0
+  jq -r '.servers | keys[]' "$MCP_FILE" 2>/dev/null || true
+}
+
+cmd_mcp() {
+  sync_ready || die "sync is not set up — run 'crate init' first"
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list)
+      [ -f "$MCP_FILE" ] || { info "no MCP servers registered"; return 0; }
+      jq -r '.servers | to_entries[] | "\(.key)\t\(.value.url)\t\(.value.auth)"' "$MCP_FILE" \
+        | while IFS=$'\t' read -r name url auth; do
+            local has="no token"
+            [ -n "$(token_for "$name")" ] && has="token on this machine"
+            printf '  %-20s %s  (%s, %s)\n' "$name" "$url" "$auth" "$has"
+          done
+      ;;
+    add)
+      local name="${1:-}" url="${2:-}" auth="bearer"
+      [ -n "$name" ] && [ -n "$url" ] || die "usage: crate mcp add <name> <url> [--no-auth]"
+      [ "${3:-}" = "--no-auth" ] && auth="none"
+      printf '%s' "$name" | grep -Eq '^[a-zA-Z0-9_-]+$' || die "server name must be [a-zA-Z0-9_-]"
+      [ -f "$MCP_FILE" ] || printf '{ "servers": {} }\n' > "$MCP_FILE"
+      jq --arg n "$name" --arg u "$url" --arg a "$auth" \
+        '.servers[$n] = {url: $u, auth: $a}' "$MCP_FILE" > "$MCP_FILE.tmp"
+      mv "$MCP_FILE.tmp" "$MCP_FILE"
+      if [ "$auth" = "bearer" ] && [ -z "$(token_for "$name")" ]; then
+        prompt_token "$name"
+      fi
+      info "registered '$name' — run 'crate sync' to publish it to the fleet"
+      ;;
+    remove)
+      local name="${1:-}"; [ -n "$name" ] || die "usage: crate mcp remove <name>"
+      [ -f "$MCP_FILE" ] && { jq --arg n "$name" 'del(.servers[$n])' "$MCP_FILE" > "$MCP_FILE.tmp"; mv "$MCP_FILE.tmp" "$MCP_FILE"; }
+      for f in "$LOCAL_TOKENS_FILE" "$SYNC_TOKENS_FILE"; do
+        [ -f "$f" ] && { grep -v "^${name}=" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"; chmod 600 "$f"; }
+      done
+      info "removed '$name' (if its token was ever synced it remains in git history — rotate it at the source if that matters)"
+      ;;
+    *) die "usage: crate mcp [list|add|remove]" ;;
+  esac
+}
+
+prompt_token() { # ADR 0002: offer synced (default) or local-only storage
+  local name="$1" token where
+  read -r -s -p "token for MCP server '$name' (input hidden): " token; echo >&2
+  [ -n "$token" ] || { warn "no token given — '$name' will be configured without auth headers"; return 0; }
+  read -r -p "save it [S]ynced to every machine, or [l]ocal to this machine only? [S/l] " where
+  if [[ "$where" == [lL]* ]]; then
+    set_token "$name" "$token" "$LOCAL_TOKENS_FILE"
+    info "token saved local-only ($LOCAL_TOKENS_FILE)"
+  else
+    set_token "$name" "$token" "$SYNC_TOKENS_FILE"
+    info "token saved to the Sync Repo (private; see docs/adr/0002)"
+  fi
+}
+
+# Materialize the registry into each agent's native config inside its crate
+# home. The registry is the source of truth: the managed section is rebuilt
+# every session start. Tokens are baked in here — these files live in the
+# local agent home, which never syncs.
+materialize_mcp() {
+  local agent="$1" home="$2"
+  [ -f "$MCP_FILE" ] || return 0
+  local servers="{}" name url auth token
+  while IFS=$'\t' read -r name url auth; do
+    token="$(token_for "$name")"
+    if [ "$auth" = "bearer" ] && [ -z "$token" ]; then
+      prompt_token "$name"
+      token="$(token_for "$name")"
+    fi
+    if [ -n "$token" ]; then
+      servers="$(jq -n --argjson s "$servers" --arg n "$name" --arg u "$url" --arg t "$token" \
+        '$s + {($n): {type:"http", url:$u, headers:{Authorization:("Bearer " + $t)}}}')"
+    else
+      servers="$(jq -n --argjson s "$servers" --arg n "$name" --arg u "$url" \
+        '$s + {($n): {type:"http", url:$u}}')"
+    fi
+  done < <(jq -r '.servers | to_entries[] | "\(.key)\t\(.value.url)\t\(.value.auth)"' "$MCP_FILE")
+
+  case "$agent" in
+    claude)
+      local cfg="$home/.claude.json"
+      [ -f "$cfg" ] || printf '{}\n' > "$cfg"
+      jq --argjson s "$servers" '.mcpServers = $s' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+      ;;
+    codex)
+      # Best-effort: codex's HTTP MCP support varies by version. The managed
+      # block is rebuilt each session; everything outside it is untouched.
+      local cfg="$home/.codex/config.toml" block
+      mkdir -p "$home/.codex"
+      touch "$cfg"
+      block="$(jq -r '.servers | to_entries[] |
+        "[mcp_servers.\(.key)]\nurl = \"\(.value.url)\""' "$MCP_FILE")"
+      awk '/^# >>> contextcrate mcp >>>$/{skip=1} !skip{print} /^# <<< contextcrate mcp <<<$/{skip=0}' \
+        "$cfg" > "$cfg.tmp"
+      {
+        cat "$cfg.tmp"
+        printf '# >>> contextcrate mcp >>>\n# managed by crate — rebuilt every session start\n%s\n# <<< contextcrate mcp <<<\n' "$block"
+      } > "$cfg"
+      rm -f "$cfg.tmp"
+      ;;
+  esac
+}
+
+# --------------------------------------------------------------- handoffs
+
+HANDOFF_MARK='<!-- contextcrate-handoff'
+
+latest_handoff() { # latest_handoff <slug> → prints path of newest handoff across all machines
+  local slug="$1" best="" best_date="" f date
+  for f in "$SYNC_DIR"/machines/*/handoffs/"$slug".md; do
+    [ -f "$f" ] || continue
+    date="$(sed -n "1s/.*date=\([^ ]*\).*/\1/p" "$f")"
+    if [ -z "$best" ] || [[ "$date" > "$best_date" ]]; then best="$f"; best_date="$date"; fi
+  done
+  [ -n "$best" ] && printf '%s' "$best"
+  return 0
+}
+
+# The handoff reaches the agent through its global memory file inside the
+# crate-owned home (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md). Rewritten at
+# every session start, so it always reflects the current project.
+write_memory_file() { # write_memory_file <agent> <home> <slug>
+  local agent="$1" home="$2" slug="$3" target handoff from
+  case "$agent" in
+    claude) target="$home/.claude/CLAUDE.md" ;;
+    codex)  target="$home/.codex/AGENTS.md" ;;
+  esac
+  mkdir -p "$(dirname "$target")"
+  handoff="$(latest_handoff "$slug")"
+  if [ -n "$handoff" ]; then
+    from="$(sed -n "1s/.*machine=\([^ ]*\).*date=\([^ ]*\).*/machine \1, \2/p" "$handoff")"
+    {
+      printf '# Managed by ContextCrate — rewritten at every session start; do not edit.\n\n'
+      printf '## Handoff from the previous session on this project (%s)\n\n' "$from"
+      tail -n +2 "$handoff"
+      printf '\nContinue from this handoff unless the user redirects you.\n'
+    } > "$target"
+    info "handoff loaded ($from)"
+  else
+    printf '# Managed by ContextCrate — rewritten at every session start; do not edit.\n\nNo handoff exists for this project yet. One is written automatically when a session ends.\n' > "$target"
+  fi
+}
+
+generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after the session ends
+  local agent="$1" slug="$2" project="$3"
+  local out="$SYNC_DIR/machines/$MACHINE/handoffs/$slug.md"
+  local prompt='The session is ending. Based on this conversation, write a handoff note so the next session on this project can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. Output only the markdown, no preamble.'
+  local body="" cmd
+  case "$agent" in
+    claude) cmd=(claude --continue -p "$prompt") ;;
+    codex)  cmd=(codex exec resume --last "$prompt") ;;
+  esac
+  info "writing handoff…"
+  body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>/dev/null)" || true
+  # The prompt mandates a "## Goal" section; anything without one is an agent
+  # error message ("Not logged in", usage text, …), not a handoff.
+  if [ -z "$body" ] || ! printf '%s' "$body" | grep -q '^## Goal'; then
+    warn "handoff generation failed — keeping the previous handoff"
+    return 0
+  fi
+  mkdir -p "$(dirname "$out")"
+  {
+    printf '%s project=%s machine=%s date=%s -->\n' "$HANDOFF_MARK" "$slug" "$MACHINE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s\n' "$body"
+  } > "$out"
+  info "handoff saved: machines/$MACHINE/handoffs/$slug.md"
+}
+
+# ----------------------------------------------------------------- sync
+
+cmd_sync() {
+  sync_ready || die "sync is not set up — run 'crate init' first"
+  git_sync add -A
+  if ! git_sync diff --cached --quiet; then
+    git_sync commit -q -m "sync from $MACHINE"
+    info "committed local changes"
+  fi
+  # Conflicts are surfaced, never auto-resolved: a failed rebase stops here
+  # and leaves the repo for the user to resolve with plain git.
+  if has_upstream && ! git_sync pull --rebase; then
+    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then run 'crate sync' again"
+  fi
+  git_sync push -u origin HEAD
+  info "synced with $SYNC_URL"
+}
+
+quiet_pull() { # best-effort, at session start; offline is fine
+  sync_ready && has_upstream || return 0
+  timeout 20 git -C "$SYNC_DIR" pull --rebase -q 2>/dev/null \
+    || warn "could not pull the Sync Repo (offline, or uncommitted changes in it) — continuing with what's local"
+}
+
+quiet_push_session() { # best-effort, at session end; carries handoff + skill edits
+  sync_ready || return 0
+  git_sync add -A
+  git_sync diff --cached --quiet && return 0
+  git_sync commit -q -m "session: $1 on $MACHINE" || return 0
+  has_upstream && { timeout 30 git -C "$SYNC_DIR" pull --rebase -q 2>/dev/null || true; }
+  timeout 30 git -C "$SYNC_DIR" push -q -u origin HEAD 2>/dev/null \
+    || warn "could not push the Sync Repo — the handoff is committed locally; run 'crate sync' when back online"
+}
+
+# --------------------------------------------------------------- sessions
+
+RUN_ARGS=()
+
+compose_run_args() { # compose_run_args <agent> <home> <project>
+  local agent="$1" home="$2" project="$3"
+  RUN_ARGS=(--init -e HOME=/home/crate -e "TERM=${TERM:-xterm-256color}")
+  RUN_ARGS+=(-v "$home:/home/crate")
+  if [ "$agent" = claude ] && sync_ready; then
+    mkdir -p "$SYNC_DIR/skills/claude" "$home/.claude"
+    RUN_ARGS+=(-v "$SYNC_DIR/skills/claude:/home/crate/.claude/skills")
+  fi
+  RUN_ARGS+=(-v "$project:$project" -w "$project")
+  if [ "$HOST_MODE" -eq 1 ]; then
+    # Host Session: the container is packaging, not protection (CONTEXT.md).
+    RUN_ARGS+=(--privileged --pid=host --network=host --user 0:0 -v /:/host)
+  else
+    RUN_ARGS+=(--user "$CRATE_UID:$CRATE_GID" --cap-drop ALL --security-opt no-new-privileges)
+    if podman_rootless; then RUN_ARGS+=(--userns=keep-id); fi
+  fi
+  return 0
+}
+
+cmd_session() {
+  local agent="$1"; shift
+  need_cmd git; need_cmd jq
+  ensure_image
+  local project="$PWD" slug home
+  slug="$(slugify "$(basename "$project")")"
+  home="$HOMES_DIR/$agent"
+  mkdir -p "$home"
+
+  if ! sync_ready; then
+    warn "sync is not set up (run 'crate init') — session is sandboxed but nothing will sync"
+  fi
+  quiet_pull
+
+  # First-run convenience: agents want a git identity for project commits.
+  [ ! -f "$home/.gitconfig" ] && [ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$home/.gitconfig"
+
+  materialize_mcp "$agent" "$home"
+  sync_ready && write_memory_file "$agent" "$home" "$slug"
+
+  compose_run_args "$agent" "$home" "$project"
+  local tty=() ; [ -t 0 ] && tty=(-it)
+  [ "$HOST_MODE" -eq 1 ] && warn "HOST SESSION: sandbox off — root in the container, host / mounted at /host"
+
+  local rc=0
+  "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "$agent" "$@" || rc=$?
+
+  if sync_ready && [ -z "${CRATE_NO_HANDOFF:-}" ]; then
+    generate_handoff "$agent" "$slug" "$project"
+    quiet_push_session "$slug"
+  fi
+  return "$rc"
+}
+
+# ------------------------------------------------------------------- init
+
+cmd_init() {
+  need_cmd git; need_cmd jq; engine >/dev/null
+  mkdir -p "$CRATE_DIR" && chmod 700 "$CRATE_DIR"
+
+  local name url
+  read -r -p "machine name [$MACHINE]: " name
+  name="$(slugify "${name:-$MACHINE}")"
+  read -r -p "sync repo URL (private git repo; empty to skip sync for now)${SYNC_URL:+ [$SYNC_URL]}: " url
+  url="${url:-$SYNC_URL}"
+
+  {
+    printf '# ContextCrate config — plain bash, sourced by crate.\n'
+    printf 'MACHINE=%q\n' "$name"
+    printf 'SYNC_URL=%q\n' "$url"
+    printf '# CRATE_UID=1000  # user inside session containers (default: your uid; 1000 if root)\n'
+    printf '# CRATE_ENGINE=docker  # force docker or podman\n'
+  } > "$CONFIG_FILE"
+  MACHINE="$name"; SYNC_URL="$url"
+
+  if [ -n "$url" ]; then
+    if [ ! -d "$SYNC_DIR/.git" ]; then
+      git clone "$url" "$SYNC_DIR" || die "could not clone $url — check the URL and your SSH keys"
+    fi
+    mkdir -p "$SYNC_DIR/machines/$name/handoffs" "$SYNC_DIR/skills/claude" "$SYNC_DIR/skills/codex"
+    touch "$SYNC_DIR/machines/$name/handoffs/.gitkeep" \
+          "$SYNC_DIR/skills/claude/.gitkeep" "$SYNC_DIR/skills/codex/.gitkeep"
+    [ -f "$SYNC_TOKENS_FILE" ] && chmod 600 "$SYNC_TOKENS_FILE"
+    git_sync add -A
+    git_sync diff --cached --quiet || git_sync commit -q -m "add machine $name"
+    git_sync push -u origin HEAD 2>/dev/null || warn "could not push yet — run 'crate sync' when the remote is reachable"
+    info "machine '$name' joined the fleet"
+  else
+    warn "no sync repo — sessions work, but handoffs/MCP/skills stay on this machine; rerun 'crate init' to add one"
+  fi
+
+  if confirm "build the container image now? (a few minutes; otherwise it builds on first session)"; then
+    build_image
+  fi
+  info "done. try: cd <a project> && crate claude"
+}
+
+# ----------------------------------------------------------------- import
+
+cmd_import() {
+  local agent="${1:-}" home
+  [ "$agent" = claude ] || [ "$agent" = codex ] || die "usage: crate import <claude|codex>"
+  home="$HOMES_DIR/$agent"
+  mkdir -p "$home"
+  case "$agent" in
+    claude)
+      [ -f "$HOME/.claude/.credentials.json" ] || [ -f "$HOME/.claude.json" ] \
+        || die "no Claude Code login found on this host (~/.claude)"
+      mkdir -p "$home/.claude"
+      [ -f "$HOME/.claude.json" ] && cp "$HOME/.claude.json" "$home/.claude.json"
+      [ -f "$HOME/.claude/.credentials.json" ] && { cp "$HOME/.claude/.credentials.json" "$home/.claude/"; chmod 600 "$home/.claude/.credentials.json"; }
+      ;;
+    codex)
+      [ -f "$HOME/.codex/auth.json" ] || die "no Codex login found on this host (~/.codex/auth.json)"
+      mkdir -p "$home/.codex"
+      cp "$HOME/.codex/auth.json" "$home/.codex/auth.json"
+      chmod 600 "$home/.codex/auth.json"
+      ;;
+  esac
+  info "imported the host's $agent login — sessions will start authenticated (credentials stay on this machine, never synced)"
+}
+
+# ----------------------------------------------------------------- status
+
+cmd_status() {
+  printf 'ContextCrate %s on %s\n' "$CRATE_VERSION" "$MACHINE"
+  local e img="not built"
+  e="$(engine 2>/dev/null || true)"
+  [ -n "$e" ] && "$e" image inspect "$IMAGE" >/dev/null 2>&1 && img="built"
+  printf '  engine: %s, image: %s\n' "${e:-none}" "$img"
+
+  if ! sync_ready; then
+    printf '  sync: not set up (run crate init)\n'
+  else
+    printf '  sync: %s\n' "$SYNC_URL"
+    printf '  last sync commit: %s\n' "$(git_sync log -1 --format='%h %s (%cr)' 2>/dev/null || echo none)"
+    printf '\nFleet:\n'
+    local m d f slug date
+    for m in "$SYNC_DIR"/machines/*/; do
+      [ -d "$m" ] || continue
+      printf '  %s\n' "$(basename "$m")"
+      for f in "$m"handoffs/*.md; do
+        [ -f "$f" ] || continue
+        slug="$(basename "$f" .md)"
+        date="$(sed -n "1s/.*date=\([^ ]*\).*/\1/p" "$f")"
+        printf '    %-28s %s\n' "$slug" "${date:-?}"
+      done
+    done
+    local names; names="$(mcp_names | paste -sd, - | sed 's/,/, /g')"
+    printf '\nMCP servers: %s\n' "${names:-(none)}"
+    printf 'Skills:\n'
+    local a s list
+    for a in claude codex; do
+      list=""
+      for s in "$SYNC_DIR/skills/$a"/*/; do
+        [ -d "$s" ] && list="$list$(basename "$s"), "
+      done
+      printf '  %s: %s\n' "$a" "${list:-(none), }" | sed 's/, $//'
+    done
+  fi
+
+  # Plugins are per-host by design (ADR 0003) — say what lives only here.
+  if [ -d "$HOME/.claude/plugins" ]; then
+    local p plist=""
+    for p in "$HOME"/.claude/plugins/*/; do
+      [ -d "$p" ] || continue
+      case "$(basename "$p")" in cache|marketplaces) continue ;; esac
+      plist="$plist$(basename "$p"), "
+    done
+    if [ -n "$plist" ]; then
+      printf '\nClaude plugins on this host only (not synced): %s\n' "${plist%, }"
+    fi
+  fi
+  return 0
+}
+
+# ------------------------------------------- container snapshot / drift
+
+# The subset of container config worth tracking: what a management UI
+# (Unraid) would regenerate. Runtime noise (timestamps, IDs) is excluded
+# so the diff only shows real drift.
+SNAP_FILTER='.[0] | {
+  Image: .Config.Image,
+  Env: (.Config.Env | sort),
+  Cmd: .Config.Cmd,
+  Entrypoint: .Config.Entrypoint,
+  Binds: ((.HostConfig.Binds // []) | sort),
+  Ports: .HostConfig.PortBindings,
+  RestartPolicy: .HostConfig.RestartPolicy.Name,
+  Network: .HostConfig.NetworkMode,
+  ExtraHosts: .HostConfig.ExtraHosts,
+  Devices: .HostConfig.Devices,
+  Privileged: .HostConfig.Privileged
+}'
+
+cmd_snapshot() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: crate snapshot <container>"
+  need_cmd jq
+  mkdir -p "$SNAP_DIR"
+  "$(engine)" inspect "$name" | jq "$SNAP_FILTER" > "$SNAP_DIR/$name.json" \
+    || die "could not inspect container '$name'"
+  info "snapshot saved: $SNAP_DIR/$name.json"
+}
+
+cmd_drift() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: crate drift <container>"
+  need_cmd jq
+  local snap="$SNAP_DIR/$name.json"
+  [ -f "$snap" ] || die "no snapshot for '$name' — run 'crate snapshot $name' first"
+  local live; live="$(mktemp)"
+  "$(engine)" inspect "$name" | jq "$SNAP_FILTER" > "$live" || die "could not inspect container '$name'"
+  if diff -u --label "snapshot" --label "live" "$snap" "$live"; then
+    info "no drift — '$name' matches its snapshot"
+  else
+    echo
+    if confirm "container '$name' has drifted. restart it?"; then
+      "$(engine)" restart "$name"
+      info "restarted '$name'"
+    fi
+  fi
+  rm -f "$live"
+}
+
+# ----------------------------------------------------------------- update
+
+cmd_update() {
+  need_cmd curl
+  local self tmp
+  self="$(readlink -f "$0")"
+  tmp="$(mktemp)"
+  curl -fsSL "$CRATE_RAW_URL/crate" -o "$tmp" || die "download failed"
+  bash -n "$tmp" || die "downloaded script does not parse — not installing it"
+  chmod 755 "$tmp"
+  mv "$tmp" "$self" 2>/dev/null || { need_cmd sudo; sudo mv "$tmp" "$self"; }
+  info "crate updated ($self)"
+  info "rebuilding the container image to pick up new agent versions…"
+  build_image
+}
+
+# ------------------------------------------------------------------- help
+
+cmd_help() {
+  cat <<EOF
+ContextCrate $CRATE_VERSION — AI coding agents in disposable containers.
+
+usage: crate [--host] <command> [args]
+
+sessions
+  crate claude [args]        run Claude Code in a throwaway container, in \$PWD
+  crate codex [args]         same for Codex
+  --host                     Host Session: sandbox off, host / at /host, root
+                             (troubleshooting the machine itself — see CONTEXT.md)
+
+fleet
+  crate init                 name this machine, connect the Sync Repo
+  crate sync                 commit, pull, push the Sync Repo
+  crate status               fleet roster, handoffs, MCP servers, skills
+
+setup
+  crate import claude|codex  copy this host's agent login into crate's sessions
+  crate mcp list|add|remove  manage the MCP Registry (synced to every machine)
+
+host containers (Unraid repair helper)
+  crate snapshot <name>      save a container's config to compare against later
+  crate drift <name>         diff live config vs snapshot, offer a restart
+
+  crate update               self-update from git main + rebuild the image
+  crate version
+
+Skills: drop a folder into <sync>/skills/claude/ (or ask the agent to install
+one mid-session) and every machine's sessions have it after a sync.
+EOF
+}
+
+# ------------------------------------------------------------------- main
+
+main() {
+  load_config
+  if [ "${1:-}" = "--host" ]; then HOST_MODE=1; shift; fi
+  [ -n "${CRATE_HOST:-}" ] && HOST_MODE=1
+  local cmd="${1:-help}"; shift || true
+  case "$cmd" in
+    claude|codex)      cmd_session "$cmd" "$@" ;;
+    init)              cmd_init "$@" ;;
+    sync)              cmd_sync "$@" ;;
+    status)            cmd_status "$@" ;;
+    mcp)               cmd_mcp "$@" ;;
+    import)            cmd_import "$@" ;;
+    snapshot)          cmd_snapshot "$@" ;;
+    drift)             cmd_drift "$@" ;;
+    update)            cmd_update "$@" ;;
+    version|--version) printf 'crate %s\n' "$CRATE_VERSION" ;;
+    help|--help|-h)    cmd_help ;;
+    *)                 die "unknown command '$cmd' — try 'crate help'" ;;
+  esac
+}
+
+main "$@"
