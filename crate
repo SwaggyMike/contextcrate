@@ -169,6 +169,38 @@ set_token() { # set_token <name> <token> <file>
   mv "$f.tmp" "$f" && chmod 600 "$f"
 }
 
+# Probe an MCP URL and print a verdict word: ok:<code> | notfound | tls | plainhttp | down
+# 404 means "host yes, path no"; a TLS-only failure means a self-signed cert;
+# https that only answers as http means the wrong scheme was registered.
+probe_mcp() {
+  local url="$1" code
+  code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)" || code=000
+  if [ "$code" = "000" ]; then
+    code="$(curl -sk -m 5 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)" || code=000
+    if [ "$code" != "000" ]; then echo tls; return 0; fi
+    case "$url" in
+      https://*)
+        code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://${url#https://}" 2>/dev/null)" || code=000
+        [ "$code" != "000" ] && { echo plainhttp; return 0; }
+        ;;
+    esac
+    echo down; return 0
+  fi
+  [ "$code" = "404" ] && { echo notfound; return 0; }
+  echo "ok:$code"
+}
+
+report_mcp_probe() { # report_mcp_probe <name> <url> <verdict> <ok_fn> <bad_fn>
+  local name="$1" url="$2" verdict="$3" ok_fn="$4" bad_fn="$5"
+  case "$verdict" in
+    ok:*)      "$ok_fn" "mcp '$name': endpoint answers (HTTP ${verdict#ok:})" ;;
+    notfound)  "$bad_fn" "mcp '$name': the host answers but nothing lives at that path — wrong URL? ($url)" ;;
+    tls)       "$bad_fn" "mcp '$name': answers only with TLS verification off — self-signed certificate? agents may refuse it" ;;
+    plainhttp) "$bad_fn" "mcp '$name': nothing speaks https there, but plain http answers — re-add with http:// instead" ;;
+    *)         "$bad_fn" "mcp '$name': unreachable ($url)" ;;
+  esac
+}
+
 mcp_names() {
   [ -f "$MCP_FILE" ] || return 0
   jq -r '.servers | keys[]' "$MCP_FILE" 2>/dev/null || true
@@ -201,6 +233,7 @@ cmd_mcp() {
       fi
       quiet_push "mcp: add $name"
       info "registered '$name' for the whole fleet"
+      report_mcp_probe "$name" "$url" "$(probe_mcp "$url")" info warn
       ;;
     remove)
       local name="${1:-}"; [ -n "$name" ] || die "usage: crate mcp remove <name>"
@@ -217,12 +250,14 @@ cmd_mcp() {
 
 prompt_token() { # ADR 0002: offer synced (default) or local-only storage
   local name="$1" token where
-  read -r -s -p "token for MCP server '$name' (input hidden): " token; echo >&2
+  echo >&2
+  read -r -s -p "  token for '$name' (input is hidden; Enter to skip): " token; echo >&2
   [ -n "$token" ] || { warn "no token given — '$name' will be configured without auth headers"; return 0; }
-  read -r -p "save it [S]ynced to every machine, or [l]ocal to this machine only? [S/l] " where
+  read -r -p "  keep the token [S]ynced to every machine, or [l]ocal to this one? " where
+  echo >&2
   if [[ "$where" == [lL]* ]]; then
     set_token "$name" "$token" "$LOCAL_TOKENS_FILE"
-    info "token saved local-only ($LOCAL_TOKENS_FILE)"
+    info "token saved on this machine only"
   else
     set_token "$name" "$token" "$SYNC_TOKENS_FILE"
     info "token saved to the Sync Repo (private; see docs/adr/0002)"
@@ -694,8 +729,9 @@ cmd_settings() {
       fi
       printf '%-28s %-22s %-8s %s\n' "$k" "${val:-''}" "$src" "$help ${scope:+[$scope]}"
     done
-    printf "\nset one:  crate settings <SETTING> <value>     ('' as value = explicit empty)\n"
-    printf "          preference settings sync to every machine; add --local to pin just this one\n"
+    printf "\nchange one:  crate settings <SETTING> <value>\n"
+    printf "             preference settings apply to the whole fleet; add --local to pin\n"
+    printf "             just this machine, or set '' as the value to clear one\n"
     return 0
   fi
 
@@ -901,12 +937,7 @@ cmd_doctor() {
       if [ "$auth" = "bearer" ] && [ -z "$(token_for "$name")" ]; then
         d_warn "mcp '$name': no token on this machine — sessions will prompt for it"
       fi
-      code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
-      if [ "$code" != "000" ] && [ -n "$code" ]; then
-        d_ok "mcp '$name': endpoint answers (HTTP $code)"
-      else
-        d_fail "mcp '$name': unreachable ($url)"
-      fi
+      report_mcp_probe "$name" "$url" "$(probe_mcp "$url")" d_ok d_fail
     done < <(jq -r '.servers | to_entries[] | "\(.key)\t\(.value.url)\t\(.value.auth)"' "$MCP_FILE" 2>/dev/null)
   fi
 
