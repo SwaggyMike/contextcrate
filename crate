@@ -199,7 +199,8 @@ cmd_mcp() {
       if [ "$auth" = "bearer" ] && [ -z "$(token_for "$name")" ]; then
         prompt_token "$name"
       fi
-      info "registered '$name' — run 'crate sync' to publish it to the fleet"
+      quiet_push "mcp: add $name"
+      info "registered '$name' for the whole fleet"
       ;;
     remove)
       local name="${1:-}"; [ -n "$name" ] || die "usage: crate mcp remove <name>"
@@ -207,6 +208,7 @@ cmd_mcp() {
       for f in "$LOCAL_TOKENS_FILE" "$SYNC_TOKENS_FILE"; do
         [ -f "$f" ] && { grep -v "^${name}=" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"; chmod 600 "$f"; }
       done
+      quiet_push "mcp: remove $name"
       info "removed '$name' (if its token was ever synced it remains in git history — rotate it at the source if that matters)"
       ;;
     *) die "usage: crate mcp [list|add|remove]" ;;
@@ -328,13 +330,13 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
       base_cmd=(claude --continue -p "$prompt")
       model="${CRATE_HANDOFF_MODEL_CLAUDE-haiku}"; setting=CRATE_HANDOFF_MODEL_CLAUDE ;;
     codex)
-      base_cmd=(codex exec resume --last "$prompt")
+      base_cmd=(codex exec resume --last -c 'sandbox_mode="danger-full-access"' "$prompt")
       model="${CRATE_HANDOFF_MODEL_CODEX-}"; setting=CRATE_HANDOFF_MODEL_CODEX ;;
   esac
   local cmd=("${base_cmd[@]}")
   case "$agent:$model" in
     claude:?*) cmd=(claude --continue --model "$model" -p "$prompt") ;;
-    codex:?*)  cmd=(codex exec resume --last -m "$model" "$prompt") ;;
+    codex:?*)  cmd=(codex exec resume --last -c 'sandbox_mode="danger-full-access"' -m "$model" "$prompt") ;;
   esac
 
   info "writing handoff… (Ctrl-C skips it)"
@@ -398,15 +400,15 @@ quiet_pull() { # best-effort, at session start; offline is fine
     || warn "could not pull the Sync Repo (offline, or uncommitted changes in it) — continuing with what's local"
 }
 
-quiet_push_session() { # best-effort, at session end; carries handoff + skill edits
+quiet_push() { # quiet_push <message> — best-effort commit+push of the Sync Repo
   sync_ready || return 0
   ensure_sync_identity
   git_sync add -A
   git_sync diff --cached --quiet && return 0
-  git_sync commit -q -m "session: $1 on $MACHINE" || return 0
+  git_sync commit -q -m "$1" || return 0
   has_upstream && { timeout 30 git -C "$SYNC_DIR" pull --rebase -q 2>/dev/null || true; }
   timeout 30 git -C "$SYNC_DIR" push -q -u origin HEAD 2>/dev/null \
-    || warn "could not push the Sync Repo — the handoff is committed locally; run 'crate sync' when back online"
+    || warn "could not push the Sync Repo — the change is committed locally; run 'crate sync' when back online"
 }
 
 # --------------------------------------------------------------- sessions
@@ -415,7 +417,9 @@ RUN_ARGS=()
 
 compose_run_args() { # compose_run_args <agent> <home> <project>
   local agent="$1" home="$2" project="$3"
-  RUN_ARGS=(--init -e HOME=/home/crate -e "TERM=${TERM:-xterm-256color}")
+  # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
+  # throwaway container can only fail or evaporate — 'crate update' is the way.
+  RUN_ARGS=(--init -e HOME=/home/crate -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
   RUN_ARGS+=(-v "$home:/home/crate")
   if [ "$agent" = claude ] && sync_ready; then
     mkdir -p "$SYNC_DIR/skills/claude" "$home/.claude"
@@ -483,8 +487,17 @@ cmd_session() {
   esac
   stamp="$(mktemp)"
 
+  # Codex's own sandbox (bubblewrap) cannot create namespaces inside the
+  # container, and the container IS the sandbox here — so codex runs with its
+  # sandbox off, same spirit as claude --dangerously-skip-permissions inside
+  # crate. User-passed -c flags come later on the command line and win.
+  local launch=("$agent")
+  if [ "$agent" = codex ]; then
+    launch=(codex -c 'sandbox_mode="danger-full-access"' -c check_for_update_on_startup=false)
+  fi
+
   local rc=0
-  "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "$agent" "$@" || rc=$?
+  "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
 
   if sync_ready; then
     if [ -z "${CRATE_NO_HANDOFF:-}" ] \
@@ -495,7 +508,7 @@ cmd_session() {
     fi
     # Push regardless of the handoff: a session may have installed skills or
     # edited synced files even without a handoff to write.
-    quiet_push_session "$slug"
+    quiet_push "session: $slug on $MACHINE"
   fi
   rm -f "$stamp"
   return "$rc"
@@ -701,7 +714,8 @@ cmd_settings() {
       write_setting "$CONFIG_FILE" "$key" "$value"
     else
       write_setting "$SYNC_SETTINGS_FILE" "$key" "$value"
-      info "'$key' set for the whole fleet — travels on the next sync (session end or 'crate sync')"
+      quiet_push "settings: $key on $MACHINE"
+      info "'$key' set for the whole fleet"
     fi
   else
     write_setting "$CONFIG_FILE" "$key" "$value"
