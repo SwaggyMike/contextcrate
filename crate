@@ -245,7 +245,23 @@ cmd_mcp() {
       report_mcp_probe "$name" "$url" "$(probe_mcp "$url")" info warn
       ;;
     remove)
-      local name="${1:-}"; [ -n "$name" ] || die "usage: crate mcp remove <name>"
+      local name="${1:-}"
+      if [ -z "$name" ]; then
+        [ -f "$MCP_FILE" ] || die "no MCP servers registered"
+        local names=()
+        while IFS= read -r n; do names+=("$n"); done < <(mcp_names)
+        [ "${#names[@]}" -gt 0 ] || die "no MCP servers registered"
+        info "registered servers:"
+        for i in "${!names[@]}"; do
+          printf '  %d) %s\n' "$((i + 1))" "${names[$i]}" >&2
+        done
+        local choice
+        read -r -p "remove which server? [1-${#names[@]}, empty to cancel]: " choice
+        [ -n "$choice" ] || { info "cancelled"; return 0; }
+        printf '%s' "$choice" | grep -Eq '^[0-9]+$' && [ "$choice" -ge 1 ] && [ "$choice" -le "${#names[@]}" ] \
+          || die "not a valid choice: $choice"
+        name="${names[$((choice - 1))]}"
+      fi
       [ -f "$MCP_FILE" ] && { jq --arg n "$name" 'del(.servers[$n])' "$MCP_FILE" > "$MCP_FILE.tmp"; mv "$MCP_FILE.tmp" "$MCP_FILE"; }
       for f in "$LOCAL_TOKENS_FILE" "$SYNC_TOKENS_FILE"; do
         [ -f "$f" ] && { grep -v "^${name}=" "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"; chmod 600 "$f"; }
@@ -1082,7 +1098,7 @@ fleet
 setup
   crate import claude|codex  copy this host's agent login into crate's sessions
   crate mcp list|add|remove  manage the MCP Registry (synced to every machine);
-                             bare 'crate mcp add' asks for everything step by step
+                             bare 'add' or 'remove' walks through it interactively
   crate settings             show every setting; 'crate settings <KEY> <value>'
                              sets it fleet-wide (--local: this machine only)
 
