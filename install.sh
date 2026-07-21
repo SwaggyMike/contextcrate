@@ -18,8 +18,34 @@ command -v jq   >/dev/null 2>&1 || die "jq is required"
 command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1 \
   || die "docker or podman is required"
 
-if [ -w /usr/local/bin ]; then BIN=/usr/local/bin
-else BIN="$HOME/.local/bin"; mkdir -p "$BIN"; fi
+# SATCHEL_BIN puts everything — script, shims, and a sibling .satchel state
+# dir — into one directory, making the install self-contained and
+# relocatable. For OSes whose rootfs is rebuilt at boot (Unraid & co):
+# point it at persistent storage and only the PATH entry needs restoring.
+#
+# On Unraid don't wait for the user to know that: a default install lands on
+# the RAM disk and vanishes at reboot, so ask for a persistent directory.
+if [ -z "${SATCHEL_BIN:-}" ] && [ -f /etc/unraid-version ]; then
+  default_bin=/mnt/user/appdata/satchel
+  if { : </dev/tty; } 2>/dev/null; then
+    say "Unraid detected — / is rebuilt at every boot, so a default install would vanish."
+    printf 'install: install directory [%s]: ' "$default_bin" >&2
+    IFS= read -r answer </dev/tty || answer=""
+    SATCHEL_BIN="${answer:-$default_bin}"
+  else
+    die "Unraid detected: a default install is wiped at reboot — rerun with SATCHEL_BIN=$default_bin (or another persistent path)"
+  fi
+  # mkdir -p would happily build the whole chain on the RAM disk; creating
+  # only the last component catches a stopped array or a typo.
+  [ -d "$(dirname "$SATCHEL_BIN")" ] \
+    || die "parent of $SATCHEL_BIN does not exist — is the array started?"
+fi
+if [ -n "${SATCHEL_BIN:-}" ]; then
+  BIN="$SATCHEL_BIN"; mkdir -p "$BIN"
+  STATE_DIR="${SATCHEL_DIR:-$BIN/.satchel}"
+  mkdir -p "$STATE_DIR"  # existing sibling dir is what turns detection on
+elif [ -w /usr/local/bin ]; then BIN=/usr/local/bin; STATE_DIR="${SATCHEL_DIR:-$HOME/.satchel}"
+else BIN="$HOME/.local/bin"; mkdir -p "$BIN"; STATE_DIR="${SATCHEL_DIR:-$HOME/.satchel}"; fi
 
 # When run from a checkout, install the local copy; otherwise download main.
 # The installed commit is recorded in ~/.satchel/script-sha so 'satchel
@@ -44,8 +70,8 @@ bash -n "$tmp" || die "downloaded satchel script does not parse"
 install -m 755 "$tmp" "$BIN/satchel"
 rm -f "$tmp"
 if [ -n "$sha" ]; then
-  mkdir -p "$HOME/.satchel"
-  printf '%s\n' "$sha" > "$HOME/.satchel/script-sha"
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$sha" > "$STATE_DIR/script-sha"
 fi
 say "installed $BIN/satchel${sha:+ (commit ${sha:0:7})}"
 
@@ -53,34 +79,42 @@ for agent in claude codex; do
   shim="$BIN/$agent"
   # -e is false for dangling symlinks. Treat -L as existing too, otherwise
   # redirecting into one follows its missing target and aborts the installer.
-  if { [ -e "$shim" ] || [ -L "$shim" ]; } && ! grep -q "exec satchel" "$shim" 2>/dev/null; then
+  if { [ -e "$shim" ] || [ -L "$shim" ]; } && ! grep -q "satchel shim\|exec satchel" "$shim" 2>/dev/null; then
     say "SKIPPED shim '$agent': $shim exists and is not a satchel shim."
     say "  remove it (or the host CLI it points to) and rerun to route '$agent' through satchel."
     continue
   fi
-  printf '#!/usr/bin/env bash\nexec satchel %s "$@"\n' "$agent" > "$shim"
+  # Absolute path, not PATH lookup: shims keep working from a boot script or
+  # cron before the user's PATH is set up.
+  printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$BIN/satchel" "$agent" > "$shim"
   chmod 755 "$shim"
   say "installed shim $shim"
 done
 
-case ":$PATH:" in
-  *":$BIN:"*) : ;;
-  *)
-    say "NOTE: $BIN is not on your PATH yet."
-    say "  run:  export PATH=\"$BIN:\$PATH\""
-    say "  (on Debian/Ubuntu a fresh login picks it up automatically once the directory exists)"
-    ;;
-esac
+if [ -f /etc/unraid-version ] && [ "$BIN" != /usr/local/bin ]; then
+  say "NOTE: to survive reboots, add to /boot/config/go:"
+  say "  ln -sf $BIN/satchel $BIN/claude $BIN/codex /usr/local/bin/"
+  say "  (also persist the sync SSH key — see the Unraid section of the README)"
+else
+  case ":$PATH:" in
+    *":$BIN:"*) : ;;
+    *)
+      say "NOTE: $BIN is not on your PATH yet."
+      say "  run:  export PATH=\"$BIN:\$PATH\""
+      say "  (on Debian/Ubuntu a fresh login picks it up automatically once the directory exists)"
+      ;;
+  esac
+fi
 
 # Chain straight into setup. Under `curl | bash` stdin is the script itself,
 # so give init the real terminal; skip when non-interactive (CI) or already
 # set up (this is an update run).
 initialized=0
-if [ -f "$HOME/.satchel/config" ]; then
+if [ -f "$STATE_DIR/config" ]; then
   SYNC_URL=""
-  . "$HOME/.satchel/config" 2>/dev/null || true
+  . "$STATE_DIR/config" 2>/dev/null || true
   # a configured sync URL without a clone means a previous init didn't finish
-  if [ -z "$SYNC_URL" ] || [ -d "$HOME/.satchel/sync/.git" ]; then initialized=1; fi
+  if [ -z "$SYNC_URL" ] || [ -d "$STATE_DIR/sync/.git" ]; then initialized=1; fi
 fi
 if [ "$initialized" -eq 1 ]; then
   say "done — already initialized ('satchel status' to check the fleet)"

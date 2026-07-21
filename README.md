@@ -12,12 +12,11 @@ production-grade: simple, readable, boring.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh | bash
-satchel init
 ```
 
-`init` names the machine and connects your private Sync Repo (self-hosted
-Gitea, private GitHub repo, or a bare repo on any SSH box). Then, in any
-project:
+The installer chains straight into `satchel init`, which names the machine
+and connects your private Sync Repo (self-hosted Gitea, private GitHub repo,
+or a bare repo on any SSH box). Then, in any project:
 
 ```sh
 claude        # Claude Code in a throwaway container, scoped to this directory
@@ -31,6 +30,39 @@ at `/host`). Log in once (or `satchel import claude` to
 copy the host's login); every session after that starts authenticated. When
 a session ends, the agent writes a short handoff; the next session on that
 project — on any machine — picks it up.
+
+### Unraid (and other RAM-backed root filesystems)
+
+Unraid rebuilds `/`, `/usr/local/bin`, and `/root` from flash at every boot,
+so a default install vanishes on reboot. The installer detects Unraid and
+asks for a persistent directory instead (default
+`/mnt/user/appdata/satchel`); non-interactively, set it yourself:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh | SATCHEL_BIN=/mnt/user/appdata/satchel bash
+```
+
+Either way that puts the script, the `claude`/`codex` shims, and all state (a sibling
+`.satchel/` directory — config, sync clone, agent logins) in that one
+directory, and satchel finds its state next to itself. The only things left
+on the RAM disk are conveniences to restore at boot; add to
+`/boot/config/go`:
+
+```sh
+# satchel: back on the PATH after reboot (targets appear once the array starts)
+ln -sf /mnt/user/appdata/satchel/satchel /mnt/user/appdata/satchel/claude \
+       /mnt/user/appdata/satchel/codex /usr/local/bin/
+# satchel: restore the sync SSH key (one-time: cp /root/.ssh/id_ed25519* /boot/config/ssh/root/)
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+cp /boot/config/ssh/root/id_ed25519* /root/.ssh/ 2>/dev/null && chmod 600 /root/.ssh/id_ed25519
+```
+
+The SSH key line matters because `init` generates the Sync Repo key in
+`/root/.ssh`, which is also wiped at boot. After `init` shows you the key,
+copy it to flash once (`mkdir -p /boot/config/ssh/root && cp
+/root/.ssh/id_ed25519* /boot/config/ssh/root/`) and the `go` lines above
+restore it every boot. (The flash drive is unencrypted FAT — fine for a
+deploy key scoped to your private sync repo; use your judgment.)
 
 ## Commands
 

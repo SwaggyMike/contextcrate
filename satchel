@@ -11,6 +11,13 @@ set -euo pipefail
 SATCHEL_VERSION="2.0.0"
 SATCHEL_REPO="SwaggyMike/satchel"
 
+# State defaults to ~/.satchel, but a .satchel directory next to the script
+# wins: that makes an install self-contained and relocatable, for OSes whose
+# rootfs is rebuilt at boot (Unraid & co) — script, shims, and state then
+# sit together on persistent storage. An explicit SATCHEL_DIR beats both.
+if [ -z "${SATCHEL_DIR:-}" ] && [ -d "$(dirname "$(readlink -f "$0")")/.satchel" ]; then
+  SATCHEL_DIR="$(dirname "$(readlink -f "$0")")/.satchel"
+fi
 SATCHEL_DIR="${SATCHEL_DIR:-$HOME/.satchel}"
 CONFIG_FILE="$SATCHEL_DIR/config"
 SYNC_DIR="$SATCHEL_DIR/sync"
