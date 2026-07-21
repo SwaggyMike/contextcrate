@@ -206,6 +206,12 @@ mcp_names() {
   jq -r '.servers | keys[]' "$MCP_FILE" 2>/dev/null || true
 }
 
+# Codex doesn't take MCP bearer tokens inline; its config names an env var
+# (bearer_token_env_var) and the session passes the token through it.
+mcp_env_name() { # mcp_env_name <server-name> → SATCHEL_MCP_TOKEN_<NAME>
+  printf 'SATCHEL_MCP_TOKEN_%s' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+}
+
 cmd_mcp() {
   sync_ready || die "sync is not set up — run 'satchel init' first"
   local sub="${1:-list}"; shift || true
@@ -291,46 +297,55 @@ prompt_token() { # ADR 0002: offer synced (default) or local-only storage
 
 # Materialize the registry into each agent's native config inside its satchel
 # home. The registry is the source of truth: the managed section is rebuilt
-# every session start. Tokens are baked in here — these files live in the
-# local agent home, which never syncs.
+# every session start. Claude takes tokens inline in .claude.json; codex only
+# takes an env var name (bearer_token_env_var), so the session passes the
+# token through the environment. Either way nothing here ever syncs.
 materialize_mcp() {
   local agent="$1" home="$2"
   [ -f "$MCP_FILE" ] || return 0
-  local servers="{}" name url auth token
+  local servers="{}" block="" name url auth token
   while IFS=$'\t' read -r name url auth; do
     token="$(token_for "$name")"
     if [ "$auth" = "bearer" ] && [ -z "$token" ]; then
       prompt_token "$name"
       token="$(token_for "$name")"
     fi
-    if [ -n "$token" ]; then
-      servers="$(jq -n --argjson s "$servers" --arg n "$name" --arg u "$url" --arg t "$token" \
-        '$s + {($n): {type:"http", url:$u, headers:{Authorization:("Bearer " + $t)}}}')"
-    else
-      servers="$(jq -n --argjson s "$servers" --arg n "$name" --arg u "$url" \
-        '$s + {($n): {type:"http", url:$u}}')"
-    fi
+    case "$agent" in
+      claude)
+        if [ -n "$token" ]; then
+          servers="$(jq -n --argjson s "$servers" --arg n "$name" --arg u "$url" --arg t "$token" \
+            '$s + {($n): {type:"http", url:$u, headers:{Authorization:("Bearer " + $t)}}}')"
+        else
+          servers="$(jq -n --argjson s "$servers" --arg n "$name" --arg u "$url" \
+            '$s + {($n): {type:"http", url:$u}}')"
+        fi
+        ;;
+      codex)
+        block="${block}[mcp_servers.${name}]"$'\n'"url = \"${url}\""$'\n'
+        if [ -n "$token" ]; then
+          block="${block}bearer_token_env_var = \"$(mcp_env_name "$name")\""$'\n'
+        fi
+        ;;
+    esac
   done < <(jq -r '.servers | to_entries[] | "\(.key)\t\(.value.url)\t\(.value.auth)"' "$MCP_FILE")
 
   case "$agent" in
     claude)
       local cfg="$home/.claude.json"
       [ -f "$cfg" ] || printf '{}\n' > "$cfg"
-      jq --argjson s "$servers" '.mcpServers = $s' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+      jq --argjson s "$servers" '.mcpServers = $s' "$cfg" > "$cfg.tmp" && mv -f "$cfg.tmp" "$cfg"
       ;;
     codex)
-      # Best-effort: codex's HTTP MCP support varies by version. The managed
-      # block is rebuilt each session; everything outside it is untouched.
-      local cfg="$home/.codex/config.toml" block
+      # The managed block is rebuilt each session; everything outside it is
+      # untouched.
+      local cfg="$home/.codex/config.toml"
       mkdir -p "$home/.codex"
       touch "$cfg"
-      block="$(jq -r '.servers | to_entries[] |
-        "[mcp_servers.\(.key)]\nurl = \"\(.value.url)\""' "$MCP_FILE")"
       awk '/^# >>> satchel mcp >>>$/{skip=1} !skip{print} /^# <<< satchel mcp <<<$/{skip=0}' \
         "$cfg" > "$cfg.tmp"
       {
         cat "$cfg.tmp"
-        printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s\n# <<< satchel mcp <<<\n' "$block"
+        printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s# <<< satchel mcp <<<\n' "$block"
       } > "$cfg"
       rm -f "$cfg.tmp"
       ;;
@@ -398,6 +413,14 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
     claude:?*) cmd=(claude --continue --model "$model" -p "$prompt") ;;
     codex:?*)  cmd=(codex exec resume --last -c 'sandbox_mode="danger-full-access"' -m "$model" "$prompt") ;;
   esac
+
+  # The handoff writer never needs host powers: recompose the run args
+  # sandboxed, so a Host Session's handoff can't litter the agent home with
+  # root-owned files that break every later session.
+  local saved_host="$HOST_MODE"
+  HOST_MODE=0
+  compose_run_args "$agent" "$HOMES_DIR/$agent" "$project"
+  HOST_MODE="$saved_host"
 
   info "writing handoff… (Ctrl-C skips it)"
   # Trap INT so Ctrl-C skips the handoff instead of killing satchel mid-script.
@@ -485,6 +508,15 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     mkdir -p "$SYNC_DIR/skills/claude" "$home/.claude"
     RUN_ARGS+=(-v "$SYNC_DIR/skills/claude:/home/satchel/.claude/skills")
   fi
+  if [ "$agent" = codex ]; then
+    # Codex's config names an env var per MCP bearer token (materialize_mcp);
+    # this is where the tokens actually enter the container.
+    local n t
+    while IFS= read -r n; do
+      t="$(token_for "$n")"
+      if [ -n "$t" ]; then RUN_ARGS+=(-e "$(mcp_env_name "$n")=$t"); fi
+    done < <(mcp_names)
+  fi
   RUN_ARGS+=(-v "$project:$project" -w "$project")
   if [ "$HOST_MODE" -eq 1 ]; then
     # Host Session: the container is packaging, not protection (CONTEXT.md).
@@ -494,6 +526,20 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     if podman_rootless; then RUN_ARGS+=(--userns=keep-id); fi
   fi
   return 0
+}
+
+# A Host Session runs as root in the container, and on docker that leaves
+# root-owned files in the agent home — which breaks every later session on
+# this machine (config writes fail with permission errors). Reclaim them with
+# a one-off root container; rootless podman maps container root back to the
+# user, so there is never anything to heal there.
+fix_home_ownership() { # fix_home_ownership <home>
+  podman_rootless && return 0
+  [ -n "$(find "$1" ! -user "$SATCHEL_UID" -print -quit 2>/dev/null)" ] || return 0
+  info "reclaiming files a Host Session left owned by root"
+  "$(engine)" run --rm --user 0:0 -v "$1:/reclaim" "$IMAGE" \
+    chown -R "$SATCHEL_UID:$SATCHEL_GID" /reclaim \
+    || warn "could not reclaim $1 — sessions may hit permission errors"
 }
 
 # The sandbox promise is "the container sees only the project directory" —
@@ -533,6 +579,7 @@ cmd_session() {
   slug="$(slugify "$(basename "$project")")"
   home="$HOMES_DIR/$agent"
   mkdir -p "$home"
+  fix_home_ownership "$home"
 
   if ! sync_ready; then
     warn "sync is not set up (run 'satchel init') — session is sandboxed but nothing will sync"
@@ -570,6 +617,10 @@ cmd_session() {
 
   local rc=0
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
+
+  # Reclaim now, before the handoff writer (sandboxed, running as the user)
+  # needs to read the transcripts the root session just wrote.
+  if [ "$HOST_MODE" -eq 1 ]; then fix_home_ownership "$home"; fi
 
   if sync_ready; then
     if [ -z "${SATCHEL_NO_HANDOFF:-}" ] \
@@ -939,6 +990,14 @@ cmd_doctor() {
   fi
 
   if have_pubkey; then d_ok "ssh key: present"; else d_warn "no ssh key — 'satchel key' makes one"; fi
+
+  local a
+  for a in claude codex; do
+    [ -d "$HOMES_DIR/$a" ] || continue
+    if ! podman_rootless && [ -n "$(find "$HOMES_DIR/$a" ! -user "$SATCHEL_UID" -print -quit 2>/dev/null)" ]; then
+      d_warn "$a home has files not owned by uid $SATCHEL_UID (left by a Host Session?) — the next $a session reclaims them"
+    fi
+  done
 
   if [ -z "$SYNC_URL" ]; then
     d_warn "sync not configured — 'satchel init' to join a fleet"
