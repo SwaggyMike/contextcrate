@@ -37,7 +37,9 @@ say "installed $BIN/satchel"
 
 for agent in claude codex; do
   shim="$BIN/$agent"
-  if [ -e "$shim" ] && ! grep -q "exec satchel" "$shim" 2>/dev/null; then
+  # -e is false for dangling symlinks. Treat -L as existing too, otherwise
+  # redirecting into one follows its missing target and aborts the installer.
+  if { [ -e "$shim" ] || [ -L "$shim" ]; } && ! grep -q "exec satchel" "$shim" 2>/dev/null; then
     say "SKIPPED shim '$agent': $shim exists and is not a satchel shim."
     say "  remove it (or the host CLI it points to) and rerun to route '$agent' through satchel."
     continue
