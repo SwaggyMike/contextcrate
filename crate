@@ -401,6 +401,36 @@ cmd_session() {
 
 # ------------------------------------------------------------------- init
 
+# When cloning over SSH fails, say what the user can actually do about it:
+# show this machine's public key to add to the git host, or offer to make
+# one. ssh-add exit codes: 0 = agent has keys, 1 = agent empty, 2 = no agent.
+ssh_key_hint() {
+  case "$1" in ssh://*|git@*) ;; *) return 0 ;; esac
+  echo >&2
+  local agent_rc=0
+  ssh-add -l >/dev/null 2>&1 || agent_rc=$?
+  case "$agent_rc" in
+    0) info "your ssh-agent's keys were refused — the git host doesn't know them (or the repo path is wrong)" ;;
+    1) info "your ssh-agent is reachable but has no keys loaded (ssh-add -l) — if you meant to forward one, run 'ssh-add' on the machine you connected from" ;;
+  esac
+  local pub found=0
+  for pub in "$HOME"/.ssh/*.pub; do
+    [ -f "$pub" ] || continue
+    found=1
+    info "this machine's public key — add it to your git host (profile SSH keys, or the repo's deploy keys with write access):"
+    sed 's/^/    /' "$pub" >&2
+  done
+  if [ "$found" -eq 0 ]; then
+    if confirm "this machine has no SSH key — generate one now?"; then
+      mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+      ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "crate@$MACHINE"
+      info "done. add this public key to your git host, then rerun 'crate init':"
+      sed 's/^/    /' "$HOME/.ssh/id_ed25519.pub" >&2
+    fi
+  fi
+  return 0
+}
+
 cmd_init() {
   need_cmd git; need_cmd jq; engine >/dev/null
   mkdir -p "$CRATE_DIR" && chmod 700 "$CRATE_DIR"
@@ -422,7 +452,10 @@ cmd_init() {
 
   if [ -n "$url" ]; then
     if [ ! -d "$SYNC_DIR/.git" ]; then
-      git clone "$url" "$SYNC_DIR" || die "could not clone $url — check the URL and your SSH keys"
+      if ! git clone "$url" "$SYNC_DIR"; then
+        ssh_key_hint "$url"
+        die "could not clone $url — fix the access above, then rerun 'crate init'"
+      fi
     fi
     mkdir -p "$SYNC_DIR/machines/$name/handoffs" "$SYNC_DIR/skills/claude" "$SYNC_DIR/skills/codex"
     touch "$SYNC_DIR/machines/$name/handoffs/.gitkeep" \
