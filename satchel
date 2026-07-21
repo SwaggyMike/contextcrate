@@ -464,13 +464,15 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
       base_cmd=(claude --continue -p "$prompt")
       model="${SATCHEL_HANDOFF_MODEL_CLAUDE-haiku}"; setting=SATCHEL_HANDOFF_MODEL_CLAUDE ;;
     codex)
-      base_cmd=(codex exec resume --last -c 'sandbox_mode="danger-full-access"' "$prompt")
+      # --skip-git-repo-check: codex exec hard-fails in a non-git project dir
+      # (interactive codex remembers trust; exec does not).
+      base_cmd=(codex exec resume --last --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' "$prompt")
       model="${SATCHEL_HANDOFF_MODEL_CODEX-}"; setting=SATCHEL_HANDOFF_MODEL_CODEX ;;
   esac
   local cmd=("${base_cmd[@]}")
   case "$agent:$model" in
     claude:?*) cmd=(claude --continue --model "$model" -p "$prompt") ;;
-    codex:?*)  cmd=(codex exec resume --last -c 'sandbox_mode="danger-full-access"' -m "$model" "$prompt") ;;
+    codex:?*)  cmd=(codex exec resume --last --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' -m "$model" "$prompt") ;;
   esac
 
   # The handoff writer never needs host powers: recompose the run args
@@ -483,11 +485,15 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
 
   info "writing handoff… (Ctrl-C skips it)"
   # Trap INT so Ctrl-C skips the handoff instead of killing satchel mid-script.
-  local body="" rc=0
+  # stderr goes to a scratch file so a failure can say WHY (a swallowed
+  # "--skip-git-repo-check was not specified" once hid this for days).
+  local body="" rc=0 errf
+  errf="$(mktemp)"
   trap 'rc=130' INT
-  body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>/dev/null)" || rc=$?
+  body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>"$errf")" || rc=$?
   trap - INT
   if [ "$rc" -eq 130 ]; then
+    rm -f "$errf"
     warn "handoff skipped — previous handoff kept"
     return 0
   fi
@@ -500,15 +506,24 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
       warn "handoff model '$model' failed — retrying with the agent's default (fix with: satchel settings $setting <model>)"
       rc=0
       trap 'rc=130' INT
-      body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" 2>/dev/null)" || rc=$?
+      body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" 2>"$errf")" || rc=$?
       trap - INT
-      [ "$rc" -eq 130 ] && { warn "handoff skipped — previous handoff kept"; return 0; }
+      if [ "$rc" -eq 130 ]; then
+        rm -f "$errf"
+        warn "handoff skipped — previous handoff kept"
+        return 0
+      fi
     fi
     if ! printf '%s' "$body" | grep -q '^## Goal'; then
       warn "handoff generation failed — keeping the previous handoff"
+      if [ -s "$errf" ]; then
+        warn "the agent said: $(tail -n 1 "$errf")"
+      fi
+      rm -f "$errf"
       return 0
     fi
   fi
+  rm -f "$errf"
   mkdir -p "$(dirname "$out")"
   {
     printf '%s project=%s machine=%s date=%s -->\n' "$HANDOFF_MARK" "$slug" "$MACHINE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
