@@ -38,6 +38,8 @@ project — on any machine — picks it up.
 | `crate init` | name this machine, connect the Sync Repo |
 | `crate sync` | commit, pull, push the Sync Repo |
 | `crate status` | fleet roster, handoffs, MCP servers, skills |
+| `crate key` | show this machine's SSH public key (generates one if needed) |
+| `crate retire [machine]` | remove a machine from the fleet — interactive picker without a name |
 | `crate import claude\|codex` | copy the host's agent login into crate's sessions |
 | `crate mcp add\|list\|remove` | manage the MCP Registry (configured once, wired into every session) |
 | `crate snapshot <name>` / `crate drift <name>` | snapshot a host container's config, later diff and restart — for UIs that regenerate containers |

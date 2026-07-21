@@ -389,21 +389,61 @@ cmd_session() {
   local tty=() ; [ -t 0 ] && tty=(-it)
   [ "$HOST_MODE" -eq 1 ] && warn "HOST SESSION: sandbox off — root in the container, host / mounted at /host"
 
+  # A handoff is only worth writing if a conversation actually happened —
+  # detected as new transcript files in the agent home during the session.
+  # Trivial runs (--version, instant quits) must not overwrite a good handoff.
+  local tdir stamp
+  case "$agent" in
+    claude) tdir="$home/.claude/projects" ;;
+    codex)  tdir="$home/.codex/sessions" ;;
+  esac
+  stamp="$(mktemp)"
+
   local rc=0
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "$agent" "$@" || rc=$?
 
   if sync_ready && [ -z "${CRATE_NO_HANDOFF:-}" ]; then
-    generate_handoff "$agent" "$slug" "$project"
-    quiet_push_session "$slug"
+    if [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -newer "$stamp" -print -quit 2>/dev/null)" ]; then
+      generate_handoff "$agent" "$slug" "$project"
+      quiet_push_session "$slug"
+    else
+      info "no conversation this session — handoff untouched"
+    fi
   fi
+  rm -f "$stamp"
   return "$rc"
 }
 
 # ------------------------------------------------------------------- init
 
-# When cloning over SSH fails, say what the user can actually do about it:
-# show this machine's public key to add to the git host, or offer to make
-# one. ssh-add exit codes: 0 = agent has keys, 1 = agent empty, 2 = no agent.
+# Crate generates and shows this machine's SSH key; pasting it into the git
+# host stays manual — crate never talks to a git host's API.
+have_pubkey() { compgen -G "$HOME/.ssh/*.pub" >/dev/null; }
+
+generate_key() {
+  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "crate@$MACHINE"
+}
+
+print_pubkeys() { # print_pubkeys "context message"
+  info "$1"
+  local pub
+  for pub in "$HOME"/.ssh/*.pub; do
+    [ -f "$pub" ] && sed 's/^/    /' "$pub" >&2
+  done
+  return 0
+}
+
+cmd_key() {
+  if ! have_pubkey; then
+    info "no SSH key on this machine — generating one"
+    generate_key
+  fi
+  print_pubkeys "this machine's public key — add it to your git host (profile SSH keys, or the repo's deploy keys with write access):"
+}
+
+# When cloning over SSH fails, say what the user can actually do about it.
+# ssh-add exit codes: 0 = agent has keys, 1 = agent empty, 2 = no agent.
 ssh_key_hint() {
   case "$1" in ssh://*|git@*) ;; *) return 0 ;; esac
   echo >&2
@@ -413,20 +453,11 @@ ssh_key_hint() {
     0) info "your ssh-agent's keys were refused — the git host doesn't know them (or the repo path is wrong)" ;;
     1) info "your ssh-agent is reachable but has no keys loaded (ssh-add -l) — if you meant to forward one, run 'ssh-add' on the machine you connected from" ;;
   esac
-  local pub found=0
-  for pub in "$HOME"/.ssh/*.pub; do
-    [ -f "$pub" ] || continue
-    found=1
-    info "this machine's public key — add it to your git host (profile SSH keys, or the repo's deploy keys with write access):"
-    sed 's/^/    /' "$pub" >&2
-  done
-  if [ "$found" -eq 0 ]; then
-    if confirm "this machine has no SSH key — generate one now?"; then
-      mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-      ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "crate@$MACHINE"
-      info "done. add this public key to your git host, then rerun 'crate init':"
-      sed 's/^/    /' "$HOME/.ssh/id_ed25519.pub" >&2
-    fi
+  if have_pubkey; then
+    print_pubkeys "this machine's public key — add it to your git host (profile SSH keys, or the repo's deploy keys with write access):"
+  elif confirm "this machine has no SSH key — generate one now?"; then
+    generate_key
+    print_pubkeys "done. add this public key to your git host:"
   fi
   return 0
 }
@@ -450,23 +481,46 @@ cmd_init() {
   } > "$CONFIG_FILE"
   MACHINE="$name"; SYNC_URL="$url"
 
+  local key_shown=0
   if [ -n "$url" ]; then
-    if [ ! -d "$SYNC_DIR/.git" ]; then
-      if ! git clone "$url" "$SYNC_DIR"; then
-        ssh_key_hint "$url"
-        die "could not clone $url — fix the access above, then rerun 'crate init'"
+    # Auth failures loop in place: show the key, wait for the user to add it
+    # to the git host, retry. Never "go rerun init".
+    while [ ! -d "$SYNC_DIR/.git" ]; do
+      git clone "$url" "$SYNC_DIR" && break
+      ssh_key_hint "$url"
+      key_shown=1
+      if ! confirm "added the key to your git host? retry the clone?"; then
+        warn "skipping sync for now — sessions work, nothing syncs; run 'crate init' when ready"
+        url=""
+        break
       fi
-    fi
+    done
+  fi
+  if [ -n "$url" ]; then
     mkdir -p "$SYNC_DIR/machines/$name/handoffs" "$SYNC_DIR/skills/claude" "$SYNC_DIR/skills/codex"
     touch "$SYNC_DIR/machines/$name/handoffs/.gitkeep" \
           "$SYNC_DIR/skills/claude/.gitkeep" "$SYNC_DIR/skills/codex/.gitkeep"
     [ -f "$SYNC_TOKENS_FILE" ] && chmod 600 "$SYNC_TOKENS_FILE"
     git_sync add -A
     git_sync diff --cached --quiet || git_sync commit -q -m "add machine $name"
-    git_sync push -u origin HEAD 2>/dev/null || warn "could not push yet — run 'crate sync' when the remote is reachable"
-    info "machine '$name' joined the fleet"
+    # This push is also the write-access check: a read-only deploy key fails
+    # HERE, while the user is watching, not at some background session end.
+    if git_sync push -u origin HEAD; then
+      info "machine '$name' joined the fleet"
+    else
+      warn "cloned OK but PUSH FAILED — if you used a deploy key it may be read-only; sync needs write access"
+      warn "fix the key's access on the git host, then run 'crate sync'"
+    fi
   else
-    warn "no sync repo — sessions work, but handoffs/MCP/skills stay on this machine; rerun 'crate init' to add one"
+    if [ "$key_shown" -eq 0 ]; then
+      if ! have_pubkey && confirm "no SSH key on this machine — generate one now so it's ready for a sync repo later?"; then
+        generate_key
+      fi
+      if have_pubkey; then
+        print_pubkeys "this machine's public key — add it to your git host now, and connecting a sync repo later is one 'crate init' away:"
+      fi
+    fi
+    warn "no sync repo — sessions work, but handoffs/MCP/skills stay on this machine"
   fi
 
   if confirm "build the container image now? (a few minutes; otherwise it builds on first session)"; then
@@ -498,6 +552,61 @@ cmd_import() {
       ;;
   esac
   info "imported the host's $agent login — sessions will start authenticated (credentials stay on this machine, never synced)"
+}
+
+# ----------------------------------------------------------------- retire
+
+cmd_retire() {
+  sync_ready || die "sync is not set up — run 'crate init' first"
+  quiet_pull
+  local target="${1:-}"
+  if [ -z "$target" ]; then
+    local names=() m marker i
+    for m in "$SYNC_DIR"/machines/*/; do
+      [ -d "$m" ] || continue
+      names+=("$(basename "$m")")
+    done
+    [ "${#names[@]}" -gt 0 ] || die "the fleet is empty — nothing to retire"
+    info "fleet:"
+    for i in "${!names[@]}"; do
+      marker=""
+      [ "${names[$i]}" = "$MACHINE" ] && marker=" (this machine)"
+      printf '  %d) %s%s\n' "$((i + 1))" "${names[$i]}" "$marker" >&2
+    done
+    local choice
+    read -r -p "retire which machine? [1-${#names[@]}, empty to cancel]: " choice
+    [ -n "$choice" ] || { info "cancelled"; return 0; }
+    printf '%s' "$choice" | grep -Eq '^[0-9]+$' && [ "$choice" -ge 1 ] && [ "$choice" -le "${#names[@]}" ] \
+      || die "not a valid choice: $choice"
+    target="${names[$((choice - 1))]}"
+  fi
+  [ -d "$SYNC_DIR/machines/$target" ] || die "no machine '$target' in the fleet"
+
+  local h hlist="" hcount=0
+  for h in "$SYNC_DIR/machines/$target"/handoffs/*.md; do
+    [ -f "$h" ] || continue
+    hcount=$((hcount + 1)); hlist="$hlist$(basename "$h" .md), "
+  done
+  if [ "$hcount" -gt 0 ]; then
+    info "'$target' has $hcount handoff(s) that go with it: ${hlist%, }"
+  fi
+  confirm "retire '$target' — delete its folder from the Sync Repo? (git history keeps it)" || { info "cancelled"; return 0; }
+
+  git_sync rm -rq -- "machines/$target"
+  git_sync commit -q -m "retire $target"
+  if has_upstream && ! git_sync pull --rebase -q; then
+    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'crate sync'"
+  fi
+  git_sync push -q -u origin HEAD || warn "could not push — run 'crate sync' when the remote is reachable"
+  info "'$target' retired from the fleet"
+
+  if [ "$target" = "$MACHINE" ]; then
+    warn "that was this machine — its local state ($CRATE_DIR) still exists: config, agent logins, the sync clone"
+    if confirm "delete the local state too? (agent logins in sessions will be lost)"; then
+      rm -rf "$CRATE_DIR"
+      info "removed $CRATE_DIR — this machine is fully retired"
+    fi
+  fi
 }
 
 # ----------------------------------------------------------------- status
@@ -635,6 +744,8 @@ fleet
   crate init                 name this machine, connect the Sync Repo
   crate sync                 commit, pull, push the Sync Repo
   crate status               fleet roster, handoffs, MCP servers, skills
+  crate key                  show this machine's SSH public key (makes one if needed)
+  crate retire [machine]     remove a machine from the fleet (picks from a list)
 
 setup
   crate import claude|codex  copy this host's agent login into crate's sessions
@@ -664,6 +775,8 @@ main() {
     init)              cmd_init "$@" ;;
     sync)              cmd_sync "$@" ;;
     status)            cmd_status "$@" ;;
+    key)               cmd_key "$@" ;;
+    retire)            cmd_retire "$@" ;;
     mcp)               cmd_mcp "$@" ;;
     import)            cmd_import "$@" ;;
     snapshot)          cmd_snapshot "$@" ;;
