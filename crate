@@ -302,13 +302,20 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
   local agent="$1" slug="$2" project="$3"
   local out="$SYNC_DIR/machines/$MACHINE/handoffs/$slug.md"
   local prompt='The session is ending. Based on this conversation, write a handoff note so the next session on this project can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. Output only the markdown, no preamble.'
-  local body="" cmd
+  local body="" cmd rc=0
   case "$agent" in
     claude) cmd=(claude --continue -p "$prompt") ;;
     codex)  cmd=(codex exec resume --last "$prompt") ;;
   esac
-  info "writing handoff…"
-  body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>/dev/null)" || true
+  info "writing handoff… (takes ~30-60s; Ctrl-C skips it)"
+  # Trap INT so Ctrl-C skips the handoff instead of killing crate mid-script.
+  trap 'rc=130' INT
+  body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>/dev/null)" || rc=$?
+  trap - INT
+  if [ "$rc" -eq 130 ]; then
+    warn "handoff skipped — previous handoff kept"
+    return 0
+  fi
   # The prompt mandates a "## Goal" section; anything without one is an agent
   # error message ("Not logged in", usage text, …), not a handoff.
   if [ -z "$body" ] || ! printf '%s' "$body" | grep -q '^## Goal'; then
@@ -419,13 +426,16 @@ cmd_session() {
   local rc=0
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "$agent" "$@" || rc=$?
 
-  if sync_ready && [ -z "${CRATE_NO_HANDOFF:-}" ]; then
-    if [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -newer "$stamp" -print -quit 2>/dev/null)" ]; then
+  if sync_ready; then
+    if [ -z "${CRATE_NO_HANDOFF:-}" ] \
+       && [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -newer "$stamp" -print -quit 2>/dev/null)" ]; then
       generate_handoff "$agent" "$slug" "$project"
-      quiet_push_session "$slug"
     else
       info "no conversation this session — handoff untouched"
     fi
+    # Push regardless of the handoff: a session may have installed skills or
+    # edited synced files even without a handoff to write.
+    quiet_push_session "$slug"
   fi
   rm -f "$stamp"
   return "$rc"
