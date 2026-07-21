@@ -489,6 +489,18 @@ session_mount_guard() {
 
 cmd_session() {
   local agent="$1"; shift
+  # Crate's own flags also work after the agent name, so the shims feel like
+  # the real CLIs: 'claude --host' == 'crate --host claude'. Neither agent
+  # has flags by these names, so plucking them out is unambiguous.
+  local a args=()
+  for a in "$@"; do
+    case "$a" in
+      --host)        HOST_MODE=1 ;;
+      --unsafe-home) UNSAFE_HOME=1 ;;
+      *)             args+=("$a") ;;
+    esac
+  done
+  set -- "${args[@]}"
   need_cmd git; need_cmd jq
   session_mount_guard "$agent"
   ensure_image
@@ -1047,6 +1059,8 @@ sessions
                              (troubleshooting the machine itself — see CONTEXT.md)
   --unsafe-home              allow a session in \$HOME or above (mounts it ALL,
                              SSH keys and tokens included — normally refused)
+                             both flags work before or after the agent name:
+                             'crate --host claude' == 'claude --host'
 
 fleet
   crate init                 name this machine, connect the Sync Repo
