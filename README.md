@@ -44,25 +44,28 @@ curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh 
 
 Either way that puts the script, the `claude`/`codex` shims, and all state (a sibling
 `.satchel/` directory — config, sync clone, agent logins) in that one
-directory, and satchel finds its state next to itself. The only things left
-on the RAM disk are conveniences to restore at boot; add to
-`/boot/config/go`:
+directory, and satchel finds its state next to itself.
+
+Two things do live on the RAM disk and need restoring at every boot: the
+PATH links in `/usr/local/bin` and the sync SSH key in `/root/.ssh`. The
+installer offers to append a marked block to `/boot/config/go` that restores
+both, and `init` keeps a copy of the key it generates in
+`/boot/config/ssh/root/` for that block to restore. Accept the prompt and
+reboots just work. If you'd rather manage `go` yourself, the block it would
+have added is:
 
 ```sh
-# satchel: back on the PATH after reboot (targets appear once the array starts)
-ln -sf /mnt/user/appdata/satchel/satchel /mnt/user/appdata/satchel/claude \
-       /mnt/user/appdata/satchel/codex /usr/local/bin/
-# satchel: restore the sync SSH key (one-time: cp /root/.ssh/id_ed25519* /boot/config/ssh/root/)
+# >>> satchel boot persistence >>>
+ln -sf /mnt/user/appdata/satchel/satchel /mnt/user/appdata/satchel/claude /usr/local/bin/
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
 cp /boot/config/ssh/root/id_ed25519* /root/.ssh/ 2>/dev/null && chmod 600 /root/.ssh/id_ed25519
+# <<< satchel boot persistence <<<
 ```
 
-The SSH key line matters because `init` generates the Sync Repo key in
-`/root/.ssh`, which is also wiped at boot. After `init` shows you the key,
-copy it to flash once (`mkdir -p /boot/config/ssh/root && cp
-/root/.ssh/id_ed25519* /boot/config/ssh/root/`) and the `go` lines above
-restore it every boot. (The flash drive is unencrypted FAT — fine for a
-deploy key scoped to your private sync repo; use your judgment.)
+(Only shims the installer actually created are linked — an existing non-satchel
+`codex` in `/usr/local/bin` is never clobbered. And the flash drive is
+unencrypted FAT — fine for a key scoped to your private sync repo; use your
+judgment.)
 
 ## Commands
 

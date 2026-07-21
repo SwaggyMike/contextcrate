@@ -75,6 +75,7 @@ if [ -n "$sha" ]; then
 fi
 say "installed $BIN/satchel${sha:+ (commit ${sha:0:7})}"
 
+shims_installed=()
 for agent in claude codex; do
   shim="$BIN/$agent"
   # -e is false for dangling symlinks. Treat -L as existing too, otherwise
@@ -89,12 +90,42 @@ for agent in claude codex; do
   printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$BIN/satchel" "$agent" > "$shim"
   chmod 755 "$shim"
   say "installed shim $shim"
+  shims_installed+=("$shim")
 done
 
 if [ -f /etc/unraid-version ] && [ "$BIN" != /usr/local/bin ]; then
-  say "NOTE: to survive reboots, add to /boot/config/go:"
-  say "  ln -sf $BIN/satchel $BIN/claude $BIN/codex /usr/local/bin/"
-  say "  (also persist the sync SSH key — see the Unraid section of the README)"
+  # Finish the job on Unraid: /usr/local/bin and /root/.ssh are rebuilt at
+  # every boot, so the PATH links and the sync SSH key (which satchel keeps a
+  # copy of on flash) must be restored by /boot/config/go. Offer to write
+  # that block; the marker keeps reruns from stacking duplicates.
+  go=/boot/config/go
+  marker="# >>> satchel boot persistence >>>"
+  add_go=n
+  if grep -qsF "$marker" "$go"; then
+    say "boot persistence already set up in $go"
+  elif { : </dev/tty; } 2>/dev/null; then
+    printf 'install: add boot persistence to %s (PATH links + sync SSH key restore)? [Y/n] ' "$go" >&2
+    IFS= read -r reply </dev/tty || reply=""
+    case "$reply" in [Nn]*) : ;; *) add_go=y ;; esac
+  fi
+  if [ "$add_go" = y ]; then
+    {
+      printf '\n%s\n' "$marker"
+      printf 'ln -sf %s' "$BIN/satchel"
+      for s in ${shims_installed[@]+"${shims_installed[@]}"}; do printf ' %s' "$s"; done
+      printf ' /usr/local/bin/\n'
+      printf 'mkdir -p /root/.ssh && chmod 700 /root/.ssh\n'
+      printf 'cp /boot/config/ssh/root/id_ed25519* /root/.ssh/ 2>/dev/null && chmod 600 /root/.ssh/id_ed25519\n'
+      printf '# <<< satchel boot persistence <<<\n'
+    } >> "$go"
+    say "added boot persistence to $go"
+    # Make this boot look like the next one will.
+    ln -sf "$BIN/satchel" ${shims_installed[@]+"${shims_installed[@]}"} /usr/local/bin/ 2>/dev/null || true
+  elif ! grep -qsF "$marker" "$go"; then
+    say "NOTE: to survive reboots, add to $go:"
+    say "  ln -sf $BIN/satchel ${shims_installed[*]-} /usr/local/bin/"
+    say "  (and persist the sync SSH key — see the Unraid section of the README)"
+  fi
 else
   case ":$PATH:" in
     *":$BIN:"*) : ;;

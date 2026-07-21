@@ -729,6 +729,14 @@ have_pubkey() { compgen -G "$HOME/.ssh/*.pub" >/dev/null; }
 generate_key() {
   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
   ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "satchel@$MACHINE"
+  # Unraid wipes /root/.ssh at every boot; keep a copy on flash so the
+  # /boot/config/go block written by install.sh can restore it. The flash is
+  # unencrypted FAT — acceptable for a key scoped to the private sync repo.
+  if [ -f /etc/unraid-version ] && [ -d /boot/config ]; then
+    mkdir -p /boot/config/ssh/root
+    cp "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_ed25519.pub" /boot/config/ssh/root/
+    info "Unraid: key copied to /boot/config/ssh/root so it survives reboots"
+  fi
 }
 
 print_pubkeys() { # print_pubkeys "context message"
