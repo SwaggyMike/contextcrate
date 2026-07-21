@@ -33,10 +33,16 @@ info() { printf 'crate: %s\n' "$*" >&2; }
 warn() { printf 'crate: warning: %s\n' "$*" >&2; }
 die()  { printf 'crate: error: %s\n' "$*" >&2; exit 1; }
 
-confirm() { # confirm "question"  → returns 0 on yes
+confirm() { # confirm "question"  → returns 0 on yes; default no (for destructive asks)
   local reply
   read -r -p "$1 [y/N] " reply
   [[ "$reply" == [yY]* ]]
+}
+
+confirm_yes() { # default yes (for asks almost everyone wants)
+  local reply
+  read -r -p "$1 [Y/n] " reply
+  [[ ! "$reply" == [nN]* ]]
 }
 
 need_cmd() {
@@ -466,7 +472,7 @@ ssh_key_hint() {
   esac
   if have_pubkey; then
     print_pubkeys "this machine's public key — add it to your git host (profile SSH keys, or the repo's deploy keys with write access):"
-  elif confirm "this machine has no SSH key — generate one now?"; then
+  elif confirm_yes "this machine has no SSH key — generate one now?"; then
     generate_key
     print_pubkeys "done. add this public key to your git host:"
   fi
@@ -500,7 +506,7 @@ cmd_init() {
       git clone "$url" "$SYNC_DIR" && break
       ssh_key_hint "$url"
       key_shown=1
-      if ! confirm "added the key to your git host? retry the clone?"; then
+      if ! confirm_yes "added the key to your git host? retry the clone?"; then
         warn "skipping sync for now — sessions work, nothing syncs; run 'crate init' when ready"
         url=""
         break
@@ -525,7 +531,7 @@ cmd_init() {
     fi
   else
     if [ "$key_shown" -eq 0 ]; then
-      if ! have_pubkey && confirm "no SSH key on this machine — generate one now so it's ready for a sync repo later?"; then
+      if ! have_pubkey && confirm_yes "no SSH key on this machine — generate one now so it's ready for a sync repo later?"; then
         generate_key
       fi
       if have_pubkey; then
@@ -535,7 +541,7 @@ cmd_init() {
     warn "no sync repo — sessions work, but handoffs/MCP/skills stay on this machine"
   fi
 
-  if confirm "build the container image now? (a few minutes; otherwise it builds on first session)"; then
+  if confirm_yes "build the container image now? (a few minutes; otherwise it builds on first session)"; then
     build_image
   fi
   info "done. try: cd <a project> && crate claude"
