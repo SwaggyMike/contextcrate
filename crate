@@ -25,6 +25,7 @@ SYNC_URL=""
 CRATE_UID=""
 CRATE_GID=""
 HOST_MODE=0
+UNSAFE_HOME=0
 ENGINE=""
 
 # ---------------------------------------------------------------- helpers
@@ -318,24 +319,27 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
   local agent="$1" slug="$2" project="$3"
   local out="$SYNC_DIR/machines/$MACHINE/handoffs/$slug.md"
   local prompt='The session is ending. Based on this conversation, write a handoff note so the next session on this project can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. Output only the markdown, no preamble.'
-  local body="" cmd rc=0
   # A handoff is a summary chore in a fixed format — the small fast model is
-  # plenty and halves the wait at session end. Override per agent in the
-  # config; empty means the agent's own default model.
-  local claude_model="${CRATE_HANDOFF_MODEL_CLAUDE-haiku}"
-  local codex_model="${CRATE_HANDOFF_MODEL_CODEX-}"
+  # plenty and halves the wait at session end. Override per agent via
+  # 'crate settings'; empty means the agent's own default model.
+  local base_cmd model setting
   case "$agent" in
     claude)
-      cmd=(claude --continue -p "$prompt")
-      [ -n "$claude_model" ] && cmd=(claude --continue --model "$claude_model" -p "$prompt")
-      ;;
+      base_cmd=(claude --continue -p "$prompt")
+      model="${CRATE_HANDOFF_MODEL_CLAUDE-haiku}"; setting=CRATE_HANDOFF_MODEL_CLAUDE ;;
     codex)
-      cmd=(codex exec resume --last "$prompt")
-      [ -n "$codex_model" ] && cmd=(codex exec resume --last -m "$codex_model" "$prompt")
-      ;;
+      base_cmd=(codex exec resume --last "$prompt")
+      model="${CRATE_HANDOFF_MODEL_CODEX-}"; setting=CRATE_HANDOFF_MODEL_CODEX ;;
   esac
+  local cmd=("${base_cmd[@]}")
+  case "$agent:$model" in
+    claude:?*) cmd=(claude --continue --model "$model" -p "$prompt") ;;
+    codex:?*)  cmd=(codex exec resume --last -m "$model" "$prompt") ;;
+  esac
+
   info "writing handoff… (Ctrl-C skips it)"
   # Trap INT so Ctrl-C skips the handoff instead of killing crate mid-script.
+  local body="" rc=0
   trap 'rc=130' INT
   body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>/dev/null)" || rc=$?
   trap - INT
@@ -344,10 +348,22 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
     return 0
   fi
   # The prompt mandates a "## Goal" section; anything without one is an agent
-  # error message ("Not logged in", usage text, …), not a handoff.
-  if [ -z "$body" ] || ! printf '%s' "$body" | grep -q '^## Goal'; then
-    warn "handoff generation failed — keeping the previous handoff"
-    return 0
+  # error message ("Not logged in", model not found, usage text), not a handoff.
+  if ! printf '%s' "$body" | grep -q '^## Goal'; then
+    # Fatfingered model safeguard: a bad CRATE_HANDOFF_MODEL_* must not stop
+    # handoffs — retry once on the agent's own default and say who to blame.
+    if [ -n "$model" ]; then
+      warn "handoff model '$model' failed — retrying with the agent's default (fix with: crate settings $setting <model>)"
+      rc=0
+      trap 'rc=130' INT
+      body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" 2>/dev/null)" || rc=$?
+      trap - INT
+      [ "$rc" -eq 130 ] && { warn "handoff skipped — previous handoff kept"; return 0; }
+    fi
+    if ! printf '%s' "$body" | grep -q '^## Goal'; then
+      warn "handoff generation failed — keeping the previous handoff"
+      return 0
+    fi
   fi
   mkdir -p "$(dirname "$out")"
   {
@@ -416,9 +432,26 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   return 0
 }
 
+# The sandbox promise is "the container sees only the project directory" —
+# which is void if the project directory IS your home (SSH keys, tokens,
+# logins) or an ancestor of it. Host Sessions mount / on purpose, so no guard.
+session_mount_guard() {
+  [ "$HOST_MODE" -eq 1 ] && return 0
+  [ "$UNSAFE_HOME" -eq 1 ] && return 0
+  local bad=0
+  [ "$PWD" = "/" ] && bad=1
+  case "$HOME" in "$PWD"|"$PWD"/*) bad=1 ;; esac
+  if [ "$bad" -eq 1 ]; then
+    die "refusing to start a session in $PWD — that would mount your entire home directory (SSH keys, MCP tokens, logins) read-write into the sandbox.
+       cd into a project directory, or run 'crate --unsafe-home $1' if you really mean it."
+  fi
+  return 0
+}
+
 cmd_session() {
   local agent="$1"; shift
   need_cmd git; need_cmd jq
+  session_mount_guard "$agent"
   ensure_image
   local project="$PWD" slug home
   slug="$(slugify "$(basename "$project")")"
@@ -862,6 +895,8 @@ sessions
   crate codex [args]         same for Codex
   --host                     Host Session: sandbox off, host / at /host, root
                              (troubleshooting the machine itself — see CONTEXT.md)
+  --unsafe-home              allow a session in \$HOME or above (mounts it ALL,
+                             SSH keys and tokens included — normally refused)
 
 fleet
   crate init                 name this machine, connect the Sync Repo
@@ -894,7 +929,13 @@ EOF
 
 main() {
   load_config
-  if [ "${1:-}" = "--host" ]; then HOST_MODE=1; shift; fi
+  while :; do
+    case "${1:-}" in
+      --host)        HOST_MODE=1; shift ;;
+      --unsafe-home) UNSAFE_HOME=1; shift ;;
+      *) break ;;
+    esac
+  done
   [ -n "${CRATE_HOST:-}" ] && HOST_MODE=1
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
