@@ -202,6 +202,17 @@ podman_rootless() {
   [ "$(engine)" = podman ] && [ "$(id -u)" -ne 0 ]
 }
 
+# SELinux hosts (Fedora & co): confined containers cannot touch bind-mounted
+# host paths (user_home_t), so sessions die reading their own agent home.
+# Relabeling with :z/:Z is wrong here - it rewrites labels on arbitrary host
+# dirs (the project itself) and cannot cover the ssh-agent socket - so label
+# separation is disabled for the session instead, the podman-documented way
+# to mount host paths. The sandbox is unchanged: mount namespace,
+# unprivileged uid, cap-drop, no-new-privileges.
+selinux_active() {
+  command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled 2>/dev/null
+}
+
 # Sessions get the host ssh-agent socket, not key files: the agent inside can
 # ask the host to sign (so git push works) but can never read or copy a key.
 # ADR 0005 has the tradeoff; SATCHEL_SSH=0 turns it off.
@@ -695,6 +706,7 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     RUN_ARGS+=(--privileged --pid=host --network=host --user 0:0 -v /:/host)
   else
     RUN_ARGS+=(--user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
+    if selinux_active; then RUN_ARGS+=(--security-opt label=disable); fi
     if podman_rootless; then RUN_ARGS+=(--userns=keep-id); fi
   fi
   return 0
@@ -709,7 +721,9 @@ fix_home_ownership() { # fix_home_ownership <home>
   podman_rootless && return 0
   [ -n "$(find "$1" ! -user "$SATCHEL_UID" -print -quit 2>/dev/null)" ] || return 0
   info "reclaiming files a Host Session left owned by root"
-  "$(engine)" run --rm --user 0:0 -v "$1:/reclaim" "$IMAGE" \
+  local label=()
+  if selinux_active; then label=(--security-opt label=disable); fi
+  "$(engine)" run --rm --user 0:0 "${label[@]}" -v "$1:/reclaim" "$IMAGE" \
     chown -R "$SATCHEL_UID:$SATCHEL_GID" /reclaim \
     || warn "could not reclaim $1 — sessions may hit permission errors"
 }
