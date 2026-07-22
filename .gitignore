@@ -2,6 +2,7 @@
 .agents/
 .claude/
 skills-lock.json
+skills/shared/.system/
 
 # Local working notes
 REWRITE-PROMPT.md
