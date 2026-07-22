@@ -13,8 +13,12 @@ A tiny wrapper command named `claude` or `codex` on the host PATH that execs `sa
 _Avoid_: alias, symlink
 
 **Session**:
-A single run of an agent CLI inside a throwaway Docker container, scoped to one project directory. The container is deleted when the session ends.
+A single run of an agent CLI inside a throwaway Docker container, scoped to one directory. The container is deleted when the session ends. A directory becomes a Project only after the user opts in.
 _Avoid_: workspace, environment
+
+**Project**:
+A directory the user explicitly chose to track. Project identity and handoffs are global across the fleet; each machine keeps only its local path mapping. A Git remote links checkouts automatically when present, but Git is not required.
+_Avoid_: every working directory, repository (not every repository is tracked)
 
 **Sync Repo**:
 The user-owned private git repository (cloned at `~/.satchel/sync/`) that carries handoffs, tool settings, the MCP Registry, and the Skill Library between machines. Agent login credentials and transcripts never enter it.
@@ -29,7 +33,7 @@ The folder of agent skills carried whole in the Sync Repo, shared by both agents
 _Avoid_: plugins, marketplace
 
 **Handoff**:
-A short per-project markdown summary (goal, done, in-flight, next steps, gotchas) written automatically by the agent when a session ends, and injected into the next session's starting context — including on another machine. Semantic continuity, as opposed to literal transcript replay.
+A short per-project markdown summary (goal, done, in-flight, next steps, gotchas) written automatically after a meaningful session in a tracked Project, and injected into the next session's starting context — including on another machine. Handoffs live under `projects/<id>/handoffs/`; machine directories contain only host-specific state and path mappings. Semantic continuity, as opposed to literal transcript replay.
 _Avoid_: summary, checkpoint, state file
 
 **Host Session**:

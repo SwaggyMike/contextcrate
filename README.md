@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh 
 
 The installer chains straight into `satchel init`, which names the machine
 and connects your private Sync Repo (self-hosted Gitea, private GitHub repo,
-or a bare repo on any SSH box). Then, in any project:
+or a bare repo on any SSH box). Then, in any directory:
 
 ```sh
 claude        # Claude Code in a throwaway container, scoped to this directory
@@ -29,9 +29,12 @@ machine's files don't exist (in a Host Session it knows the machine lives
 at `/host`). The host's ssh-agent is forwarded in as a socket, so `git push`
 works in-session while key files never enter the container (the
 `SATCHEL_SSH` setting turns it off — see ADR 0005). Log in once (or `satchel import claude` to
-copy the host's login); every session after that starts authenticated. When
-a session ends, the agent writes a short handoff; the next session on that
-project — on any machine — picks it up.
+copy the host's login); every session after that starts authenticated. After
+the first meaningful session in a new directory, Satchel asks once whether
+to track it as a project. If accepted, the agent writes a short handoff; the
+next session on that project — on any machine — picks it up. Rejected paths
+are remembered on that machine and their child directories remain eligible.
+Use `satchel track [name]` or `satchel untrack` to change the choice.
 
 ### Unraid (and other RAM-backed root filesystems)
 
@@ -74,6 +77,8 @@ judgment.)
 | command | what it does |
 | --- | --- |
 | `satchel claude` / `satchel codex` | run a session in `$PWD` (the `claude`/`codex` shims do the same) |
+| `satchel track [name]` | explicitly track the current directory as a project |
+| `satchel untrack` | stop tracking the current path on this machine; children remain eligible |
 | `satchel --host claude` | Host Session: sandbox off, host `/` at `/host` — for fixing the machine itself |
 | `satchel init` | name this machine, connect the Sync Repo |
 | `satchel sync` | commit, pull, push the Sync Repo |
@@ -87,6 +92,11 @@ judgment.)
 | `satchel update` | self-update from `main` (lists the commits it pulls in) and rebuild the agent image |
 
 ## What syncs, what doesn't
+
+The Sync Repo's root `profile.md` and `preferences.md` are global. Project
+identity and timestamped handoffs live under `projects/`; host paths and
+tracking decisions live under `machines/<machine>/projects.json`. Global
+skills live under `skills/shared/`.
 
 Handoffs, MCP registry + tokens (private repo, your SSH keys — see
 [ADR 0002](docs/adr/0002-mcp-tokens-in-sync-repo.md)), and the shared
