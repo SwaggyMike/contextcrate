@@ -1268,7 +1268,7 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   local agent="$1" home="$2" project="$3"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
   # throwaway container can only fail or evaporate — 'satchel update' is the way.
-  RUN_ARGS=(--init -e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
+  RUN_ARGS=(-e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
   # Machine Notes: durable facts about this machine, curated by agents
   # mid-session (same mechanism as the Skill Library - rw mount, synced by
@@ -1314,9 +1314,11 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   fi
   if [ "$HOST_MODE" -eq 1 ]; then
     # Host Session: the container is packaging, not protection (CONTEXT.md).
+    # No --init here: it needs a private PID namespace, and --pid=host shares
+    # the host's — the host's own init reaps zombies instead.
     RUN_ARGS+=(--privileged --pid=host --network=host --user 0:0 -v /:/host)
   else
-    RUN_ARGS+=(--user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
+    RUN_ARGS+=(--init --user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
     if selinux_active; then RUN_ARGS+=(--security-opt label=disable); fi
     if podman_rootless; then RUN_ARGS+=(--userns=keep-id); fi
   fi
