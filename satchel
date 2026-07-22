@@ -216,8 +216,46 @@ selinux_active() {
 # Sessions get the host ssh-agent socket, not key files: the agent inside can
 # ask the host to sign (so git push works) but can never read or copy a key.
 # ADR 0005 has the tradeoff; SATCHEL_SSH=0 turns it off.
+#
+# A socket alone proves nothing: it can point at a dead agent, or a live one
+# with no identities loaded (common over SSH: the forwarded agent answers but
+# ssh-add was never run on the client). ssh_agent_state probes once with
+# ssh-add (exit 0 = identities loaded, 1 = agent reachable but empty,
+# anything else = nothing answering) so launch messages and the session
+# preamble describe what git push will actually do.
+SSH_STATE=""
+ssh_agent_state() {
+  if [ "${SATCHEL_SSH:-1}" = 0 ]; then printf 'off'; return 0; fi
+  if [ ! -S "${SSH_AUTH_SOCK:-}" ]; then printf 'none'; return 0; fi
+  local rc=0
+  ssh-add -l >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) printf 'ready' ;;
+    1) printf 'empty' ;;
+    *) printf 'dead' ;;
+  esac
+}
+
+# Mount the socket when an agent is actually answering on it. An empty agent
+# still gets mounted: keys the user ssh-adds on the host mid-session become
+# usable inside immediately. A dead socket gets nothing - mounting it could
+# only produce confusing in-container errors.
 ssh_forwarding() {
-  [ "${SATCHEL_SSH:-1}" != 0 ] && [ -S "${SSH_AUTH_SOCK:-}" ]
+  case "${SSH_STATE:=$(ssh_agent_state)}" in
+    ready|empty) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Session-start preflight: say up front what git-over-SSH will do, instead of
+# letting the first push inside the sandbox fail mysteriously.
+ssh_preflight() {
+  case "${SSH_STATE:=$(ssh_agent_state)}" in
+    empty) warn "ssh-agent has no keys loaded (ssh-add -l) - git push over SSH will fail inside the session until you run 'ssh-add' (on the machine you connected from, if this is a remote shell); keys added later work without restarting" ;;
+    dead)  warn "SSH_AUTH_SOCK is set but no ssh-agent answered - git over SSH will not work inside the session" ;;
+    none)  info "no ssh-agent on this host - git push over SSH will not work inside the session (SATCHEL_SSH=0 hides this note)" ;;
+  esac
+  return 0
 }
 
 slugify() { # project dir name → safe file name
@@ -620,13 +658,31 @@ project directory, you cannot see the machine's copy — say it is outside the
 sandbox rather than reporting it does not exist. (Reaching the machine
 itself takes a Host Session: restart with --host.)
 EOF
-      if ssh_forwarding; then
-        cat <<'EOF'
+      case "${SSH_STATE:=$(ssh_agent_state)}" in
+        ready) cat <<'EOF'
 
-The host's ssh-agent is forwarded into this session: git push/pull over SSH
-works normally, even though no key files exist in the container.
+The host's ssh-agent is forwarded into this session and has identities
+loaded: git push/pull over SSH works normally, even though no key files
+exist in the container.
 EOF
-      fi
+          ;;
+        empty) cat <<'EOF'
+
+The host's ssh-agent socket is forwarded into this session, but the agent
+had no identities loaded at session start. git push/pull over SSH will fail
+with "Permission denied (publickey)" until the user runs ssh-add on the
+host; a key they add becomes usable here immediately, no restart needed.
+If a push fails that way, ask the user to run ssh-add instead of debugging
+credentials inside the container.
+EOF
+          ;;
+        *) cat <<'EOF'
+
+No ssh-agent reaches this session, so git over SSH cannot authenticate.
+Commit locally and let the user push from the host, or use HTTPS remotes.
+EOF
+          ;;
+      esac
     fi
     printf '\n'
     if [ -n "$context" ]; then
@@ -879,6 +935,9 @@ cmd_session() {
   [ ! -f "$home/.gitconfig" ] && [ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$home/.gitconfig"
 
   materialize_mcp "$agent" "$home"
+  # Probe the ssh-agent once, before anything reads SSH_STATE: the launch
+  # warning and the memory-file preamble must describe the same agent.
+  ssh_preflight
   # Written even without sync: the "where you are running" note must reach
   # the agent regardless; latest_handoff just finds nothing in that case.
   write_memory_file "$agent" "$home" "$slug" "$project"
@@ -1328,6 +1387,14 @@ cmd_doctor() {
   fi
 
   if have_pubkey; then d_ok "ssh key: present"; else d_warn "no ssh key — 'satchel key' makes one"; fi
+
+  case "$(ssh_agent_state)" in
+    ready) d_ok   "ssh-agent: keys loaded - sessions can push over SSH" ;;
+    empty) d_warn "ssh-agent: reachable but no keys loaded - run 'ssh-add' so sessions can push over SSH" ;;
+    dead)  d_warn "ssh-agent: SSH_AUTH_SOCK is set but no agent answered" ;;
+    none)  d_warn "ssh-agent: not running - sessions cannot push over SSH" ;;
+    off)   d_ok   "ssh forwarding: disabled (SATCHEL_SSH=0)" ;;
+  esac
 
   local a
   for a in claude codex; do

@@ -24,14 +24,26 @@ sandbox is the primary workplace. Alternatives considered:
 
 ## Decision
 
-- `compose_run_args` forwards the socket whenever the host has one and
-  `SATCHEL_SSH` is not `0`. Both sandboxed and Host Sessions get it.
+- `ssh_agent_state` probes the agent with `ssh-add -l` at session start and
+  classifies it: `ready` (identities loaded), `empty` (agent answers, no
+  identities), `dead` (socket but nothing answering), `none` (no socket),
+  `off` (`SATCHEL_SSH=0`). A socket alone proves nothing - the common
+  failure is a forwarded agent that answers but was never given a key.
+- `compose_run_args` forwards the socket when the agent answers (`ready` or
+  `empty`; keys added on the host mid-session become usable inside
+  immediately). Dead sockets are not mounted. Both sandboxed and Host
+  Sessions get it.
+- A launch preflight warns when the agent is empty or dead, so the first
+  in-session push does not fail mysteriously with
+  `Permission denied (publickey)`.
 - `GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new` is set alongside:
   first contact with a git host records its key in the persistent agent home
   instead of dying on an interactive prompt no tool call can answer; later
   sessions verify against that record (trust-on-first-use).
-- The session preamble (CLAUDE.md/AGENTS.md) tells the agent forwarding is
-  active, so it pushes instead of claiming it cannot.
+- The session preamble (CLAUDE.md/AGENTS.md) states what the agent can
+  actually do: push works (`ready`), push fails until the user runs
+  `ssh-add` (`empty`), or SSH auth is unavailable (everything else). It
+  only claims git-over-SSH works when an identity is loaded.
 
 ## Consequences
 
