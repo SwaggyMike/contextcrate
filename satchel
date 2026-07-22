@@ -89,8 +89,8 @@ confirm_yes() { # default yes (for asks almost everyone wants)
 
 choose_baseline() { # yes | later | never; baseline access is privileged enough to default later
   local reply
-  explain_machine_baseline build
-  read -r -p "$(prompt_text "start the guided machine inspection now? [y]es/[N]ot now/[d]on't ask again: ")" reply
+  explain_machine_baseline
+  read -r -p "$(prompt_text "take an initial baseline of this system now? [y]es/[N]ot now/[d]on't ask again: ")" reply
   case "$reply" in
     [yY]*) printf 'yes' ;;
     [dD]*) printf 'never' ;;
@@ -98,8 +98,8 @@ choose_baseline() { # yes | later | never; baseline access is privileged enough 
   esac
 }
 
-explain_machine_baseline() { # explain_machine_baseline <build|refresh>
-  info "machine baseline: an authenticated agent will $1 concise notes about this machine's OS, hardware, storage, network, services, containers, and operational quirks"
+explain_machine_baseline() {
+  info "machine baseline: an authenticated agent will inspect this system's specs, OS, hardware, storage, network, services, containers, and operational quirks"
   info "the host is mounted read-only at /host; the agent shows you its proposed notes before saving approved content to your private Sync Repo"
 }
 
@@ -1166,13 +1166,13 @@ maybe_offer_baseline() { # maybe_offer_baseline <agent> <home>
 
 offer_baseline_refresh() {
   sync_ready && [ -t 0 ] || return 0
-  local ca=0 co=0 agent="" action="build"
+  local ca=0 co=0 agent="" question="take an initial baseline of this system now?"
   baseline_authenticated claude "$HOMES_DIR/claude" && ca=1
   baseline_authenticated codex "$HOMES_DIR/codex" && co=1
   [ "$ca" -eq 1 ] || [ "$co" -eq 1 ] || return 0
-  [ -n "$(baseline_marker_version)" ] && action="refresh"
-  explain_machine_baseline "$action"
-  confirm "start the guided machine inspection now?" || return 0
+  [ -n "$(baseline_marker_version)" ] && question="refresh the existing baseline of this system now?"
+  explain_machine_baseline
+  confirm "$question" || return 0
   if [ "$ca" -eq 1 ] && [ "$co" -eq 1 ]; then
     local reply
     read -r -p "$(prompt_text "agent [claude/codex] [claude]: ")" reply
