@@ -737,7 +737,7 @@ EOF
         printf '\n'
       fi
       cat <<EOF
-Durable facts and procedures for this machine live in ~/machine/notes.md,
+Durable facts and procedures for this machine live in /home/satchel/machine/notes.md,
 shared with every session on $MACHINE. When you identify the right way to do
 a machine-specific task, record it there; when an entry turns out wrong or
 obsolete, fix or delete it - the file is curated current truth, not a log,
@@ -772,7 +772,7 @@ EOF
       done
       cat <<'EOF'
 
-Each project's past handoffs are under ~/projects/<id>/handoffs/ (read-only;
+Each project's past handoffs are under /home/satchel/projects/<id>/handoffs/ (read-only;
 the file with the newest date in its first line is the latest). When the user
 turns to one of these projects, read its latest handoff first. At session end
 Satchel files a separate handoff for each project you worked in; work outside

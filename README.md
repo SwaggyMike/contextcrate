@@ -50,7 +50,7 @@ demand instead of loading them all up front.
 
 Each machine also has notes (`machines/<name>/notes.md` in the sync repo):
 durable facts and procedures for that machine, shown to every session on it
-and editable from inside any session at `~/machine/notes.md`. Agents record
+and editable from inside any session at `/home/satchel/machine/notes.md`. Agents record
 the right way to do machine-specific tasks as they find it and clean out
 entries that go stale; you can edit the file by hand too.
 

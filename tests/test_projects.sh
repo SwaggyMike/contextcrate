@@ -42,7 +42,10 @@ printf '<!-- satchel-handoff project=- machine=testbox date=2026-02-05T00:00:00Z
 compose_run_args claude "$tmp/home_c" "$tmp/work/app"
 [[ " ${RUN_ARGS[*]} " == *"/machines/testbox:/home/satchel/machine"* ]]
 write_memory_file claude "$tmp/home_c" "" "$tmp/work/app" 2>/dev/null
-grep -q 'machine/notes.md' "$tmp/home_c/.claude/CLAUDE.md"
+grep -q '/home/satchel/machine/notes.md' "$tmp/home_c/.claude/CLAUDE.md"
+# Absolute paths only: a Host Session runs as root, where '~' resolves to
+# /root and sent an agent looking for /root/machine/notes.md once.
+! grep -q '~/machine\|~/projects' "$tmp/home_c/.claude/CLAUDE.md"
 printf 'USE PODMAN NOT DOCKER ON TESTBOX\n' > "$SATCHEL_DIR/sync/machines/testbox/notes.md"
 write_memory_file claude "$tmp/home_c" "" "$tmp/work/app" 2>/dev/null
 grep -q 'USE PODMAN NOT DOCKER ON TESTBOX' "$tmp/home_c/.claude/CLAUDE.md"
