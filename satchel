@@ -251,7 +251,16 @@ ssh_forwarding() {
 # letting the first push inside the sandbox fail mysteriously.
 ssh_preflight() {
   case "${SSH_STATE:=$(ssh_agent_state)}" in
-    empty) warn "ssh-agent has no keys loaded (ssh-add -l) - git push over SSH will fail inside the session until you run 'ssh-add' (on the machine you connected from, if this is a remote shell); keys added later work without restarting" ;;
+    empty)
+      # Keys on disk but none in the agent: offer to load them now, while a
+      # passphrase prompt can still reach a human. The key file stays on the
+      # host either way; sessions only ever gain the ability to ask for
+      # signatures, and only while the key stays loaded.
+      if [ -t 0 ] && have_pubkey && confirm_yes "ssh-agent has no keys loaded - run 'ssh-add' now so this session can push over SSH?"; then
+        if ssh-add; then SSH_STATE=ready; return 0; fi
+      fi
+      warn "ssh-agent has no keys loaded (ssh-add -l) - git push over SSH will fail inside the session until you run 'ssh-add' (on the machine you connected from, if this is a remote shell); keys added later work without restarting"
+      ;;
     dead)  warn "SSH_AUTH_SOCK is set but no ssh-agent answered - git over SSH will not work inside the session" ;;
     none)  info "no ssh-agent on this host - git push over SSH will not work inside the session (SATCHEL_SSH=0 hides this note)" ;;
   esac

@@ -52,7 +52,9 @@ grep -q 'cannot authenticate' <(preamble none)
 grep -q 'cannot authenticate' <(preamble off)
 
 # Preflight warns on empty and dead, stays calm when ready or opted out.
-grep -q 'ssh-add' <(SSH_STATE=empty ssh_preflight 2>&1)
+# stdin from /dev/null: non-interactive runs must warn, never prompt.
+mkdir -p "$HOME/.ssh"; touch "$HOME/.ssh/id_test.pub"
+grep -q 'ssh-add' <(SSH_STATE=empty ssh_preflight </dev/null 2>&1)
 grep -q 'no ssh-agent answered' <(SSH_STATE=dead ssh_preflight 2>&1)
 [ -z "$(SSH_STATE=ready ssh_preflight 2>&1)" ]
 [ -z "$(SSH_STATE=off ssh_preflight 2>&1)" ]

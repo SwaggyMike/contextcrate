@@ -35,7 +35,11 @@ sandbox is the primary workplace. Alternatives considered:
   Sessions get it.
 - A launch preflight warns when the agent is empty or dead, so the first
   in-session push does not fail mysteriously with
-  `Permission denied (publickey)`.
+  `Permission denied (publickey)`. When the agent is empty but the host has
+  key files, an interactive launch offers to run `ssh-add` on the spot -
+  host pushes read `~/.ssh` directly and work without the agent, so an
+  empty agent is easy to miss until a session (which has no key files by
+  design) hits it.
 - `GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new` is set alongside:
   first contact with a git host records its key in the persistent agent home
   instead of dying on an interactive prompt no tool call can answer; later
