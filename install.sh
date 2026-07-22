@@ -81,22 +81,36 @@ fi
 say "installed $BIN/satchel${sha:+ (commit ${sha:0:7})}"
 
 shims_installed=()
-for agent in claude codex; do
-  shim="$BIN/$agent"
-  # -e is false for dangling symlinks. Treat -L as existing too, otherwise
-  # redirecting into one follows its missing target and aborts the installer.
-  if { [ -e "$shim" ] || [ -L "$shim" ]; } && ! grep -q "satchel shim\|exec satchel" "$shim" 2>/dev/null; then
-    say "SKIPPED shim '$agent': $shim exists and is not a satchel shim."
-    say "  remove it (or the host CLI it points to) and rerun to route '$agent' through satchel."
-    continue
+install_shims="${SATCHEL_SHIMS:-y}"
+if [ "$install_shims" = y ] && { : </dev/tty; } 2>/dev/null; then
+  printf 'install: %s' "Redirect claude and codex commands through Satchel? [Y/n] " >&2
+  IFS= read -r shim_reply </dev/tty || shim_reply=""
+  case "$shim_reply" in [Nn]*) install_shims=n ;; esac
+  if [ "$install_shims" = y ]; then
+    say "  When enabled, typing 'claude' or 'codex' will launch Satchel sessions."
+    say "  You can change this later with 'satchel link' and 'satchel unlink'."
   fi
-  # Absolute path, not PATH lookup: shims keep working from a boot script or
-  # cron before the user's PATH is set up.
-  printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$BIN/satchel" "$agent" > "$shim"
-  chmod 755 "$shim"
-  say "installed shim $shim"
-  shims_installed+=("$shim")
-done
+fi
+if [ "$install_shims" = y ]; then
+  for agent in claude codex; do
+    shim="$BIN/$agent"
+    # -e is false for dangling symlinks. Treat -L as existing too, otherwise
+    # redirecting into one follows its missing target and aborts the installer.
+    if { [ -e "$shim" ] || [ -L "$shim" ]; } && ! grep -q "satchel shim\|exec satchel" "$shim" 2>/dev/null; then
+      say "SKIPPED shim '$agent': $shim exists and is not a satchel shim."
+      say "  remove it (or the host CLI it points to) and rerun to route '$agent' through satchel."
+      continue
+    fi
+    # Absolute path, not PATH lookup: shims keep working from a boot script or
+    # cron before the user's PATH is set up.
+    printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$BIN/satchel" "$agent" > "$shim"
+    chmod 755 "$shim"
+    say "installed shim $shim"
+    shims_installed+=("$shim")
+  done
+else
+  say "skipped shims — run 'satchel link' later to redirect claude/codex through Satchel"
+fi
 
 if [ -f /etc/unraid-version ] && [ "$BIN" != /usr/local/bin ]; then
   # Finish the job on Unraid: /usr/local/bin and /root/.ssh are rebuilt at

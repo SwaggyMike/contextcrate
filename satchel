@@ -88,6 +88,72 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "'$1' is required but not installed"
 }
 
+# Where shims live — same priority as install.sh so 'satchel link' puts them
+# where the installer would have.
+shim_dir() {
+  if [ -n "${SATCHEL_BIN:-}" ]; then printf '%s' "$SATCHEL_BIN"
+  elif [ -w /usr/local/bin ]; then printf '%s' "/usr/local/bin"
+  else printf '%s' "$HOME/.local/bin"
+  fi
+}
+
+# Is the file at $1 a satchel shim?
+is_satchel_shim() { [ -f "$1" ] && grep -q "satchel shim" "$1" 2>/dev/null; }
+
+shim_status() { # shim_status <agent> → prints "linked <path>" or "not linked"
+  local bin agent="$1" shim
+  bin="$(shim_dir)"
+  shim="$bin/$agent"
+  if is_satchel_shim "$shim"; then
+    printf 'linked → %s' "$shim"
+  else
+    printf 'not linked'
+  fi
+}
+
+cmd_link() {
+  local agents=("$@")
+  [ "${#agents[@]}" -eq 0 ] && agents=(claude codex)
+  local bin self agent shim
+  bin="$(shim_dir)"
+  self="$(readlink -f "$0")"
+  mkdir -p "$bin"
+  for agent in "${agents[@]}"; do
+    shim="$bin/$agent"
+    if is_satchel_shim "$shim"; then
+      info "'$agent' is already linked ($shim)"
+      continue
+    fi
+    if { [ -e "$shim" ] || [ -L "$shim" ]; }; then
+      warn "skipping '$agent': $shim exists and is not a Satchel shim — remove it first or set SATCHEL_BIN"
+      continue
+    fi
+    printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$self" "$agent" > "$shim"
+    chmod 755 "$shim"
+    info "linked '$agent' → $shim"
+  done
+}
+
+cmd_unlink() {
+  local agents=("$@")
+  [ "${#agents[@]}" -eq 0 ] && agents=(claude codex)
+  local bin agent shim
+  bin="$(shim_dir)"
+  for agent in "${agents[@]}"; do
+    shim="$bin/$agent"
+    if ! [ -e "$shim" ] && ! [ -L "$shim" ]; then
+      info "'$agent' is not linked (no file at $shim)"
+      continue
+    fi
+    if ! is_satchel_shim "$shim"; then
+      warn "skipping '$agent': $shim is not a Satchel shim — not touching it"
+      continue
+    fi
+    rm -f "$shim"
+    info "unlinked '$agent' (removed $shim)"
+  done
+}
+
 # The settings catalog — single source of truth for 'satchel settings', the
 # config template, and what the setter accepts. Fields: KEY|scope|default|help.
 # 'pref' settings sync fleet-wide via settings.env in the Sync Repo; 'machine'
@@ -827,6 +893,30 @@ cmd_init() {
 
   local key_shown=0
   if [ -n "$url" ]; then
+    # Local paths that aren't git repos yet: offer to create a bare repo on
+    # the spot — handy for NFS mounts and other shared filesystems where
+    # there's no hosted git service to click "create repo" in.
+    case "$url" in
+      ssh://*|git@*|https://*|http://*) ;;
+      *)
+        local resolved; resolved="$(readlink -f "$url" 2>/dev/null || printf '%s' "$url")"
+        if [ ! -d "$resolved" ] || { [ -d "$resolved" ] && [ -z "$(ls -A "$resolved" 2>/dev/null)" ]; }; then
+          if [ ! -d "$resolved" ] && [ ! -d "$(dirname "$resolved")" ]; then
+            die "parent directory of $resolved does not exist"
+          fi
+          if confirm_yes "no git repo at $resolved — create one?"; then
+            mkdir -p "$resolved"
+            git init --bare "$resolved"
+            info "created bare git repo at $resolved"
+          fi
+        elif [ -d "$resolved" ] && ! git -C "$resolved" rev-parse --git-dir >/dev/null 2>&1; then
+          if confirm_yes "directory $resolved exists but is not a git repo — initialize a bare repo there?"; then
+            git init --bare "$resolved"
+            info "created bare git repo at $resolved"
+          fi
+        fi
+        ;;
+    esac
     # Auth failures loop in place: show the key, wait for the user to add it
     # to the git host, retry. Never "go rerun init".
     while [ ! -d "$SYNC_DIR/.git" ]; do
@@ -1032,6 +1122,10 @@ cmd_status() {
     [ -n "$av" ] && img="built ($av)"
   fi
   printf '  engine: %s, image: %s\n' "${e:-none}" "$img"
+
+  printf '\n'; out_section 'Commands:'
+  printf '  %-10s %s\n' "claude" "$(shim_status claude)"
+  printf '  %-10s %s\n' "codex" "$(shim_status codex)"
 
   if ! sync_ready; then
     printf '  sync: not set up (run satchel init)\n'
@@ -1252,6 +1346,8 @@ fleet
   satchel doctor               check this machine's whole setup and say what's wrong
 
 setup
+  satchel link [claude|codex]  redirect claude/codex commands through satchel
+  satchel unlink [claude|codex] remove the redirects (use the native CLIs directly)
   satchel import claude|codex  copy this host's agent login into satchel's sessions
   satchel mcp list|add|remove  manage the MCP Registry (synced to every machine);
                              bare 'add' or 'remove' walks through it interactively
@@ -1290,6 +1386,8 @@ main() {
     settings)          cmd_settings "$@" ;;
     doctor)            cmd_doctor "$@" ;;
     mcp)               cmd_mcp "$@" ;;
+    link)              cmd_link "$@" ;;
+    unlink)            cmd_unlink "$@" ;;
     import)            cmd_import "$@" ;;
     update)            cmd_update "$@" ;;
     version|--version) out_header "satchel $SATCHEL_VERSION" ;;
