@@ -182,6 +182,7 @@ SETTINGS_SPEC=(
   "SATCHEL_HANDOFF_MODEL_CODEX|pref||same for codex; '' = the agent's default"
   "SATCHEL_ENGINE|machine||force docker or podman (default: auto-detect)"
   "SATCHEL_SSH|machine|1|forward the host's ssh-agent into sessions so git push works (0 = off)"
+  "SATCHEL_CLIPBOARD|machine|1|forward the desktop clipboard socket so pasting images works (0 = off)"
   "SATCHEL_UID|machine||user id inside session containers (default: your uid; 1000 if root)"
   "SATCHEL_GID|machine||group id inside session containers (default: SATCHEL_UID)"
 )
@@ -437,7 +438,7 @@ FROM docker.io/library/node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git curl wget ca-certificates jq ripgrep less procps openssh-client \
-      python3 make g++ bubblewrap \
+      python3 make g++ bubblewrap wl-clipboard xclip \
  && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
 ENV HOME=/home/satchel
@@ -512,6 +513,18 @@ mcp_names() {
 # (bearer_token_env_var) and the session passes the token through it.
 mcp_env_name() { # mcp_env_name <server-name> → SATCHEL_MCP_TOKEN_<NAME>
   printf 'SATCHEL_MCP_TOKEN_%s' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+}
+
+# This is where codex's MCP tokens actually enter the container. Every codex
+# session needs it — including the baseline session, whose home carries the
+# same materialized config.toml; without the env vars codex warns
+# "MCP startup failed" for each bearer-auth server.
+compose_codex_mcp_env() { # appends to RUN_ARGS
+  local n t
+  while IFS= read -r n; do
+    t="$(token_for "$n")"
+    if [ -n "$t" ]; then RUN_ARGS+=(-e "$(mcp_env_name "$n")=$t"); fi
+  done < <(mcp_names)
 }
 
 cmd_mcp() {
@@ -1112,6 +1125,8 @@ compose_baseline_run_args() { # compose_baseline_run_args <agent> <home>
   local agent="$1" home="$2"
   RUN_ARGS=(--init -e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
+  if [ "$agent" = codex ]; then compose_codex_mcp_env; fi
+  compose_clipboard_args
   mkdir -p "$SYNC_DIR/machines/$MACHINE"
   RUN_ARGS+=(-v "$SYNC_DIR/machines/$MACHINE:/home/satchel/machine")
   RUN_ARGS+=(-v "/:/host:ro" -w /home/satchel)
@@ -1214,6 +1229,34 @@ offer_baseline_refresh() {
 
 RUN_ARGS=()
 
+# Pasting an image (Ctrl+V) means reading the host clipboard from inside the
+# container: claude shells out to wl-paste/xclip (baked into the image),
+# codex speaks the protocols itself. Both need the compositor socket.
+# Wayland is preferred and mounted at a fixed absolute path — libwayland
+# accepts an absolute WAYLAND_DISPLAY, so no XDG_RUNTIME_DIR is needed
+# inside. Headless hosts (no socket) simply get nothing, as before.
+# ADR 0007 has the tradeoff; SATCHEL_CLIPBOARD=0 turns it off.
+compose_clipboard_args() { # appends to RUN_ARGS
+  [ "${SATCHEL_CLIPBOARD:-1}" = 0 ] && return 0
+  local sock=""
+  case "${WAYLAND_DISPLAY:-}" in
+    "") ;;
+    /*) sock="$WAYLAND_DISPLAY" ;;
+    *)  [ -n "${XDG_RUNTIME_DIR:-}" ] && sock="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ;;
+  esac
+  if [ -n "$sock" ] && [ -S "$sock" ]; then
+    RUN_ARGS+=(-v "$sock:/run/satchel/wayland-0" -e WAYLAND_DISPLAY=/run/satchel/wayland-0)
+    return 0
+  fi
+  if [ -n "${DISPLAY:-}" ] && [ -d /tmp/.X11-unix ]; then
+    RUN_ARGS+=(-v /tmp/.X11-unix:/tmp/.X11-unix -e "DISPLAY=$DISPLAY")
+    if [ -n "${XAUTHORITY:-}" ] && [ -f "$XAUTHORITY" ]; then
+      RUN_ARGS+=(-v "$XAUTHORITY:/run/satchel/Xauthority:ro" -e XAUTHORITY=/run/satchel/Xauthority)
+    fi
+  fi
+  return 0
+}
+
 compose_run_args() { # compose_run_args <agent> <home> <project>
   local agent="$1" home="$2" project="$3"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
@@ -1238,13 +1281,7 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:/home/satchel/.claude/skills")
   fi
   if [ "$agent" = codex ]; then
-    # Codex's config names an env var per MCP bearer token (materialize_mcp);
-    # this is where the tokens actually enter the container.
-    local n t
-    while IFS= read -r n; do
-      t="$(token_for "$n")"
-      if [ -n "$t" ]; then RUN_ARGS+=(-e "$(mcp_env_name "$n")=$t"); fi
-    done < <(mcp_names)
+    compose_codex_mcp_env
     if sync_ready; then
       mkdir -p "$SYNC_DIR/skills/shared" "$home/.codex"
       RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:/home/satchel/.codex/skills")
@@ -1257,6 +1294,7 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     # answer; later sessions verify against that record.
     RUN_ARGS+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
   fi
+  compose_clipboard_args
   RUN_ARGS+=(-v "$project:$project" -w "$project")
   # Host Sessions skip the extras: everything is already under /host, and a
   # real repo at a bare path would contradict "bare paths are throwaway".

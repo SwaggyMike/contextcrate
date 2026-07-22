@@ -28,7 +28,9 @@ answers "that file is outside the sandbox" instead of pretending your
 machine's files don't exist (in a Host Session it knows the machine lives
 at `/host`). The host's ssh-agent is forwarded in as a socket, so `git push`
 works in-session while key files never enter the container (the
-`SATCHEL_SSH` setting turns it off — see ADR 0005). Log in once (or `satchel import claude` to
+`SATCHEL_SSH` setting turns it off — see ADR 0005). On a graphical host the
+compositor socket is forwarded the same way, so pasting an image from the
+clipboard works (`SATCHEL_CLIPBOARD` turns it off — see ADR 0007). Log in once (or `satchel import claude` to
 copy the host's login); every session after that starts authenticated. After
 an agent has authenticated, its next normal launch offers to build baseline
 machine notes. If accepted, the agent inspects the real host through a
