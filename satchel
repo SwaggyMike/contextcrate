@@ -97,6 +97,7 @@ SETTINGS_SPEC=(
   "SATCHEL_HANDOFF_MODEL_CLAUDE|pref|haiku|model that writes handoffs: haiku, sonnet, opus, fable, or a full model name; '' = the agent's default"
   "SATCHEL_HANDOFF_MODEL_CODEX|pref||same for codex; '' = the agent's default"
   "SATCHEL_ENGINE|machine||force docker or podman (default: auto-detect)"
+  "SATCHEL_SSH|machine|1|forward the host's ssh-agent into sessions so git push works (0 = off)"
   "SATCHEL_UID|machine||user id inside session containers (default: your uid; 1000 if root)"
   "SATCHEL_GID|machine||group id inside session containers (default: SATCHEL_UID)"
 )
@@ -134,6 +135,13 @@ engine() {
 
 podman_rootless() {
   [ "$(engine)" = podman ] && [ "$(id -u)" -ne 0 ]
+}
+
+# Sessions get the host ssh-agent socket, not key files: the agent inside can
+# ask the host to sign (so git push works) but can never read or copy a key.
+# ADR 0005 has the tradeoff; SATCHEL_SSH=0 turns it off.
+ssh_forwarding() {
+  [ "${SATCHEL_SSH:-1}" != 0 ] && [ -S "${SSH_AUTH_SOCK:-}" ]
 }
 
 slugify() { # project dir name → safe file name
@@ -443,6 +451,13 @@ project directory, you cannot see the machine's copy — say it is outside the
 sandbox rather than reporting it does not exist. (Reaching the machine
 itself takes a Host Session: restart with --host.)
 EOF
+      if ssh_forwarding; then
+        cat <<'EOF'
+
+The host's ssh-agent is forwarded into this session: git push/pull over SSH
+works normally, even though no key files exist in the container.
+EOF
+      fi
     fi
     printf '\n'
     if [ -n "$handoff" ]; then
@@ -601,6 +616,13 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
       mkdir -p "$SYNC_DIR/skills/shared" "$home/.codex"
       RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:/home/satchel/.codex/skills")
     fi
+  fi
+  if ssh_forwarding; then
+    RUN_ARGS+=(-v "$SSH_AUTH_SOCK:/run/ssh-agent.sock" -e SSH_AUTH_SOCK=/run/ssh-agent.sock)
+    # accept-new: first contact with a git host records its key in the agent
+    # home (a persistent mount) instead of dying on a prompt no tool call can
+    # answer; later sessions verify against that record.
+    RUN_ARGS+=(-e "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new")
   fi
   RUN_ARGS+=(-v "$project:$project" -w "$project")
   if [ "$HOST_MODE" -eq 1 ]; then

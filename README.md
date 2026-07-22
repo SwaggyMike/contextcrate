@@ -26,7 +26,9 @@ The container sees only the project directory, runs as a non-root user, and
 is deleted when the session ends — and the agent is told exactly that, so it
 answers "that file is outside the sandbox" instead of pretending your
 machine's files don't exist (in a Host Session it knows the machine lives
-at `/host`). Log in once (or `satchel import claude` to
+at `/host`). The host's ssh-agent is forwarded in as a socket, so `git push`
+works in-session while key files never enter the container (the
+`SATCHEL_SSH` setting turns it off — see ADR 0005). Log in once (or `satchel import claude` to
 copy the host's login); every session after that starts authenticated. When
 a session ends, the agent writes a short handoff; the next session on that
 project — on any machine — picks it up.
