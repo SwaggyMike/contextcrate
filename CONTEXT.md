@@ -36,6 +36,10 @@ _Avoid_: plugins, marketplace
 A short markdown summary (goal, done, in-flight, next steps, gotchas) written automatically after a meaningful session, and injected into the next session's starting context — including on another machine. Sessions in a tracked Project write to `projects/<id>/handoffs/`; sessions outside any project (Host Sessions fixing the machine itself, mostly) write to `machines/<name>/handoffs/`, scoped to that machine. Semantic continuity, as opposed to literal transcript replay.
 _Avoid_: summary, checkpoint, state file
 
+**Machine Notes**:
+Curated current truth about one machine (`machines/<name>/notes.md` in the Sync Repo): the blessed way to do machine-specific tasks, quirks, conventions. Mounted read-write into every session on that machine (`~/machine/notes.md`) and injected into the session preamble; agents record durable facts as they discover them and fix or delete entries that turn out stale. Complements Handoffs: the handoff is the baton for the current work, notes are what stays true between sessions.
+_Avoid_: journal, log (notes are kept short and current, not appended forever)
+
 **Host Session**:
-A session with sandboxing deliberately off: the host's `/` mounted read-write, root inside the container, host PID namespace. Invoked only by explicit flag (`--host`); exists for troubleshooting the machine itself. The container is packaging, not protection.
+A session with sandboxing deliberately off: the host's `/` mounted read-write, root inside the container, host PID namespace. Invoked by explicit flag (`--host`), or by answering yes when satchel refuses a sandboxed session in a home directory or `/`. The container is packaging, not protection.
 _Avoid_: privileged mode, admin mode

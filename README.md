@@ -38,6 +38,12 @@ Sessions that stay outside any project (a Host Session in /root, say) still
 write a handoff, kept per machine and loaded by the next such session there.
 Use `satchel track [name]` or `satchel untrack` to change the choice.
 
+Each machine also has notes (`machines/<name>/notes.md` in the sync repo):
+durable facts and procedures for that machine, shown to every session on it
+and editable from inside any session at `~/machine/notes.md`. Agents record
+the right way to do machine-specific tasks as they find it and clean out
+entries that go stale; you can edit the file by hand too.
+
 ### Unraid (and other RAM-backed root filesystems)
 
 Unraid rebuilds `/`, `/usr/local/bin`, and `/root` from flash at every boot,

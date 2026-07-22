@@ -698,6 +698,22 @@ EOF
           ;;
       esac
     fi
+    if sync_ready; then
+      printf '\n## Machine Notes (%s)\n\n' "$MACHINE"
+      if [ -s "$SYNC_DIR/machines/$MACHINE/notes.md" ]; then
+        cat "$SYNC_DIR/machines/$MACHINE/notes.md"
+        printf '\n'
+      fi
+      cat <<EOF
+Durable facts and procedures for this machine live in ~/machine/notes.md,
+shared with every session on $MACHINE. When you identify the right way to do
+a machine-specific task, record it there; when an entry turns out wrong or
+obsolete, fix or delete it - the file is curated current truth, not a log,
+so keep it short. Paths under /host apply only in Host Sessions. The
+end-of-session handoff is only for continuing the current work; anything
+durable belongs in the notes instead.
+EOF
+    fi
     printf '\n'
     if [ -n "$context" ]; then
       printf '## Global context\n\n'
@@ -904,6 +920,13 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   # throwaway container can only fail or evaporate — 'satchel update' is the way.
   RUN_ARGS=(--init -e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
+  # Machine Notes: durable facts about this machine, curated by agents
+  # mid-session (same mechanism as the Skill Library - rw mount, synced by
+  # the session-end push). Every session on the machine sees them.
+  if sync_ready; then
+    mkdir -p "$SYNC_DIR/machines/$MACHINE"
+    RUN_ARGS+=(-v "$SYNC_DIR/machines/$MACHINE:/home/satchel/machine")
+  fi
   if [ "$agent" = claude ] && sync_ready; then
     mkdir -p "$SYNC_DIR/skills/shared" "$home/.claude"
     RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:/home/satchel/.claude/skills")
@@ -966,14 +989,23 @@ fix_home_ownership() { # fix_home_ownership <home>
 session_mount_guard() {
   [ "$HOST_MODE" -eq 1 ] && return 0
   [ "$UNSAFE_HOME" -eq 1 ] && return 0
-  local bad=0
-  [ "$PWD" = "/" ] && bad=1
+  local bad=0 where="your home directory"
+  [ "$PWD" = "/" ] && { bad=1; where="/"; }
   case "$HOME" in "$PWD"|"$PWD"/*) bad=1 ;; esac
-  if [ "$bad" -eq 1 ]; then
-    die "refusing to start a session in $PWD — that would mount your entire home directory (SSH keys, MCP tokens, logins) read-write into the sandbox.
-       cd into a project directory, or run 'satchel --unsafe-home $1' if you really mean it."
+  [ "$bad" -eq 1 ] || return 0
+  # A sandboxed session here would mount everything that matters (SSH keys,
+  # MCP tokens, logins) while still claiming to be a sandbox. Offer the
+  # honest mode instead - deliberately default-No, so a reflexive Enter
+  # still refuses.
+  if [ -t 0 ]; then
+    local reply
+    read -r -p "$(prompt_text "starting in $where - continue as a Host Session (no sandbox, full machine access)? [y/N] ")" reply
+    if [[ "$reply" == [yY]* ]]; then HOST_MODE=1; return 0; fi
+    info "cd into a project directory, or run 'satchel --unsafe-home $1' for a sandboxed session here"
+    exit 1
   fi
-  return 0
+  die "refusing to start a session in $PWD — that would mount your entire home directory (SSH keys, MCP tokens, logins) read-write into the sandbox.
+       cd into a project directory, or run 'satchel --unsafe-home $1' if you really mean it."
 }
 
 cmd_session() {
@@ -1018,7 +1050,15 @@ cmd_session() {
 
   compose_run_args "$agent" "$home" "$project"
   local tty=() ; [ -t 0 ] && tty=(-it)
-  [ "$HOST_MODE" -eq 1 ] && warn "HOST SESSION: sandbox off — root in the container, host / mounted at /host"
+  # One banner per launch: scope (project / untracked-to-machine) and mode
+  # (sandboxed / host) are the two facts the human otherwise has to infer.
+  if [ "$HOST_MODE" -eq 1 ]; then
+    warn "HOST SESSION - no sandbox, you are root. The machine's real files are under /host; bare paths like /etc are the container's throwaway copies"
+  elif [ -n "$slug" ]; then
+    info "sandboxed session - project '$slug', only this directory is mounted"
+  else
+    info "sandboxed session - untracked directory, handoff will save under machine '$MACHINE'"
+  fi
 
   # A handoff is only worth writing if a conversation actually happened —
   # detected as new transcript files in the agent home during the session.

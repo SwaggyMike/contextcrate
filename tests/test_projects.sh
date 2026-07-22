@@ -37,6 +37,27 @@ printf '<!-- satchel-handoff project=- machine=testbox date=2026-02-05T00:00:00Z
 [ "$(basename "$(latest_handoff "")")" = second.md ]
 [ "$(basename "$(latest_handoff sample)")" = new.md ]
 
+# Machine Notes: mounted into sessions, injected into the preamble, and the
+# standing instruction is present even before any notes exist.
+compose_run_args claude "$tmp/home_c" "$tmp/work/app"
+[[ " ${RUN_ARGS[*]} " == *"/machines/testbox:/home/satchel/machine"* ]]
+write_memory_file claude "$tmp/home_c" "" "$tmp/work/app" 2>/dev/null
+grep -q 'machine/notes.md' "$tmp/home_c/.claude/CLAUDE.md"
+printf 'USE PODMAN NOT DOCKER ON TESTBOX\n' > "$SATCHEL_DIR/sync/machines/testbox/notes.md"
+write_memory_file claude "$tmp/home_c" "" "$tmp/work/app" 2>/dev/null
+grep -q 'USE PODMAN NOT DOCKER ON TESTBOX' "$tmp/home_c/.claude/CLAUDE.md"
+write_memory_file claude "$tmp/home_c" sample "$tmp/work/app" 2>/dev/null
+grep -q 'USE PODMAN NOT DOCKER ON TESTBOX' "$tmp/home_c/.claude/CLAUDE.md"
+
+# The mount guard still hard-refuses home and / without a tty.
+HOST_MODE=0 UNSAFE_HOME=0
+! (cd "$HOME" && session_mount_guard claude </dev/null 2>/dev/null)
+! (cd / && session_mount_guard claude </dev/null 2>/dev/null)
+(cd "$tmp/work/app" && session_mount_guard claude </dev/null)
+UNSAFE_HOME=1
+(cd "$HOME" && session_mount_guard claude </dev/null)
+UNSAFE_HOME=0
+
 reject_project_path "$tmp/work/downloads"
 [ "$(path_decision "$tmp/work/downloads")" = rejected ]
 [ -z "$(path_decision "$tmp/work/downloads/important")" ]
