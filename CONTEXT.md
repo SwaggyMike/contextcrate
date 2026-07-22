@@ -33,7 +33,7 @@ The folder of agent skills carried whole in the Sync Repo, shared by both agents
 _Avoid_: plugins, marketplace
 
 **Handoff**:
-A short per-project markdown summary (goal, done, in-flight, next steps, gotchas) written automatically after a meaningful session in a tracked Project, and injected into the next session's starting context — including on another machine. Handoffs live under `projects/<id>/handoffs/`; machine directories contain only host-specific state and path mappings. Semantic continuity, as opposed to literal transcript replay.
+A short markdown summary (goal, done, in-flight, next steps, gotchas) written automatically after a meaningful session, and injected into the next session's starting context — including on another machine. Sessions in a tracked Project write to `projects/<id>/handoffs/`; sessions outside any project (Host Sessions fixing the machine itself, mostly) write to `machines/<name>/handoffs/`, scoped to that machine. Semantic continuity, as opposed to literal transcript replay.
 _Avoid_: summary, checkpoint, state file
 
 **Host Session**:

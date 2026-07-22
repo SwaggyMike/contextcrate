@@ -616,10 +616,15 @@ materialize_mcp() {
 
 HANDOFF_MARK='<!-- satchel-handoff'
 
-latest_handoff() { # latest_handoff <project-id> → prints newest project handoff
-  local slug="$1" best="" best_date="" f date
-  [ -n "$slug" ] || return 0
-  for f in "$SYNC_DIR"/projects/"$slug"/handoffs/*.md; do
+# Sessions outside any tracked project (Host Sessions fixing the machine
+# itself, mostly) still produce context worth keeping - it is kept per
+# machine instead of per project: machines/<name>/handoffs/. An empty
+# project id selects that machine scope.
+latest_handoff() { # latest_handoff <project-id> → prints newest handoff
+  local slug="$1" dir best="" best_date="" f date
+  if [ -n "$slug" ]; then dir="$SYNC_DIR/projects/$slug/handoffs"
+  else dir="$SYNC_DIR/machines/$MACHINE/handoffs"; fi
+  for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
     date="$(sed -n "1s/.*date=\([^ ]*\).*/\1/p" "$f")"
     if [ -z "$best" ] || [[ "$date" > "$best_date" ]]; then best="$f"; best_date="$date"; fi
@@ -700,14 +705,18 @@ EOF
     fi
     if [ -n "$handoff" ]; then
       from="$(sed -n "1s/.*machine=\([^ ]*\).*date=\([^ ]*\).*/machine \1, \2/p" "$handoff")"
-      printf '## Handoff from the previous session on this project (%s)\n\n' "$from"
+      if [ -n "$slug" ]; then
+        printf '## Handoff from the previous session on this project (%s)\n\n' "$from"
+      else
+        printf '## Handoff from the previous session on this machine outside any project (%s)\n\n' "$from"
+      fi
       tail -n +2 "$handoff"
       printf '\nContinue from this handoff unless the user redirects you.\n'
     else
       if [ -n "$slug" ]; then
         printf 'No handoff exists for this project yet. One is written automatically when a meaningful session ends.\n'
       else
-        printf 'This directory is not a tracked project. After a meaningful session, Satchel will ask whether to track it and save a handoff.\n'
+        printf 'This directory is not a tracked project. After a meaningful session, Satchel asks whether to track it; if it stays untracked, the handoff is saved under this machine instead of a project.\n'
       fi
     fi
   } > "$target"
@@ -715,12 +724,16 @@ EOF
   return 0
 }
 
-generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after the session ends
+generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after the session ends; empty slug = machine scope
   local agent="$1" slug="$2" project="$3"
-  local now out
+  local now out scope
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  out="$SYNC_DIR/projects/$slug/handoffs/${now//:/-}--$MACHINE.md"
-  local prompt='The session is ending. Based on this conversation, write a handoff note so the next session on this project can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. Output only the markdown, no preamble.'
+  if [ -n "$slug" ]; then
+    out="$SYNC_DIR/projects/$slug/handoffs/${now//:/-}--$MACHINE.md"; scope=project
+  else
+    out="$SYNC_DIR/machines/$MACHINE/handoffs/${now//:/-}.md"; scope=machine
+  fi
+  local prompt="The session is ending. Based on this conversation, write a handoff note so the next session on this $scope can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. Output only the markdown, no preamble."
   # A handoff is a summary chore in a fixed format — the small fast model is
   # plenty and halves the wait at session end. Override per agent via
   # 'satchel settings'; empty means the agent's own default model.
@@ -792,10 +805,10 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
   rm -f "$errf"
   mkdir -p "$(dirname "$out")"
   {
-    printf '%s project=%s machine=%s date=%s -->\n' "$HANDOFF_MARK" "$slug" "$MACHINE" "$now"
+    printf '%s project=%s machine=%s date=%s -->\n' "$HANDOFF_MARK" "${slug:--}" "$MACHINE" "$now"
     printf '%s\n' "$body"
   } > "$out"
-  info "handoff saved: projects/$slug/handoffs/$(basename "$out")"
+  info "handoff saved: ${out#"$SYNC_DIR"/}"
 }
 
 # ----------------------------------------------------------------- sync
@@ -1051,7 +1064,9 @@ cmd_session() {
           fi
         fi
       fi
-      [ -n "$slug" ] && generate_handoff "$agent" "$slug" "$project"
+      # No project (declined, utility root, a Host Session in /root): the
+      # handoff still gets written, scoped to this machine.
+      generate_handoff "$agent" "$slug" "$project"
     fi
     # Push regardless of the handoff: a session may have installed skills or
     # edited synced files even without a handoff to write.
@@ -1377,10 +1392,12 @@ cmd_status() {
     printf '  sync: %s\n' "$SYNC_URL"
     printf '  last sync commit: %s\n' "$(git_sync log -1 --format='%h %s (%cr)' 2>/dev/null || echo none)"
     printf '\n'; out_section 'Fleet:'
-    local m
+    local m mh f
     for m in "$SYNC_DIR"/machines/*/; do
       [ -d "$m" ] || continue
-      printf '  %s\n' "$(basename "$m")"
+      mh=0
+      for f in "$m"handoffs/*.md; do [ -f "$f" ] && mh=$((mh + 1)); done
+      printf '  %s%s\n' "$(basename "$m")" "$([ "$mh" -gt 0 ] && printf ', %s machine handoff(s)' "$mh")"
     done
     printf '\n'; out_section 'Projects:'
     local p f date count

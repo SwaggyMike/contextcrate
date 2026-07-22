@@ -34,6 +34,8 @@ the first meaningful session in a new directory, Satchel asks once whether
 to track it as a project. If accepted, the agent writes a short handoff; the
 next session on that project — on any machine — picks it up. Rejected paths
 are remembered on that machine and their child directories remain eligible.
+Sessions that stay outside any project (a Host Session in /root, say) still
+write a handoff, kept per machine and loaded by the next such session there.
 Use `satchel track [name]` or `satchel untrack` to change the choice.
 
 ### Unraid (and other RAM-backed root filesystems)
