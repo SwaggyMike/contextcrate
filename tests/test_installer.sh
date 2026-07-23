@@ -44,6 +44,8 @@ set -e
 [ "$rc" -eq 0 ] || fail "installer failed with SATCHEL_BIN (rc=$rc)" "$output"
 [ -x "$bin/satchel" ] || fail "satchel was not installed into SATCHEL_BIN" "$output"
 [ -d "$bin/.satchel" ] || fail "sibling .satchel state dir was not created" "$output"
+[ "$(cat "$bin/.satchel/install-path")" = "$bin/satchel" ] \
+  || fail "installer did not record the installed script path" "$output"
 for shim in claude codex; do
   [ -x "$bin/$shim" ] || fail "shim '$shim' was not installed into SATCHEL_BIN" "$output"
   grep -q "satchel shim" "$bin/$shim" || fail "shim '$shim' is missing the satchel-shim marker"
@@ -58,6 +60,8 @@ printf 'MACHINE=sibling-detected\nSYNC_URL=\n' > "$bin/.satchel/config"
 status_out="$(HOME="$test_home" "$bin/satchel" status 2>&1 || true)"
 grep -q "on sibling-detected" <<< "$status_out" \
   || fail "installed satchel did not pick up the sibling .satchel state dir" "$status_out"
+grep -q "linked" <<< "$status_out" \
+  || fail "self-contained install did not find its sibling shims without SATCHEL_BIN" "$status_out"
 
 printf 'ok: sibling .satchel state dir is detected\n'
 
@@ -164,3 +168,86 @@ set -e
 grep -q "linked" <<< "$output" || fail "status does not show link state" "$output"
 grep -q "not linked" <<< "$output" || fail "status does not show unlinked state" "$output"
 printf 'ok: satchel status shows link state\n'
+
+# --- satchel uninstall preserves state by default ---------------------------
+
+uninstall_bin="$test_home/uninstall-keep"
+mkdir -p "$uninstall_bin/.satchel/home/codex"
+cp "$repo_dir/satchel" "$uninstall_bin/satchel"
+chmod 755 "$uninstall_bin/satchel"
+printf 'MACHINE=uninstall-keep\nSYNC_URL=\n' > "$uninstall_bin/.satchel/config"
+printf '%s\n' "$uninstall_bin/satchel" > "$uninstall_bin/.satchel/install-path"
+printf 'login state\n' > "$uninstall_bin/.satchel/home/codex/auth.json"
+HOME="$test_home" "$uninstall_bin/satchel" link >/dev/null 2>&1
+
+set +e
+output="$(HOME="$test_home" "$uninstall_bin/satchel" uninstall --yes 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "satchel uninstall failed (rc=$rc)" "$output"
+[ ! -e "$uninstall_bin/satchel" ] || fail "satchel uninstall left the command behind" "$output"
+[ ! -e "$uninstall_bin/claude" ] || fail "satchel uninstall left the claude shim behind" "$output"
+[ ! -e "$uninstall_bin/codex" ] || fail "satchel uninstall left the codex shim behind" "$output"
+[ -f "$uninstall_bin/.satchel/home/codex/auth.json" ] \
+  || fail "satchel uninstall deleted preserved local state" "$output"
+grep -q 'state remains' <<< "$output" \
+  || fail "satchel uninstall did not report preserved state" "$output"
+grep -q 'removed container image' <<< "$output" \
+  || fail "satchel uninstall did not remove its container image" "$output"
+
+printf 'ok: satchel uninstall preserves local state\n'
+
+# A plain uninstall remains confirmation-gated.
+cancel_bin="$test_home/uninstall-cancel"
+mkdir -p "$cancel_bin/.satchel"
+cp "$repo_dir/satchel" "$cancel_bin/satchel"
+chmod 755 "$cancel_bin/satchel"
+printf 'MACHINE=uninstall-cancel\nSYNC_URL=\n' > "$cancel_bin/.satchel/config"
+printf '%s\n' "$cancel_bin/satchel" > "$cancel_bin/.satchel/install-path"
+set +e
+output="$(printf 'n\n' | HOME="$test_home" "$cancel_bin/satchel" uninstall 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "declining satchel uninstall failed (rc=$rc)" "$output"
+[ -x "$cancel_bin/satchel" ] || fail "declining uninstall still removed the command" "$output"
+grep -q 'cancelled' <<< "$output" || fail "declined uninstall was not reported as cancelled" "$output"
+
+printf 'ok: satchel uninstall is confirmation-gated\n'
+
+# --- --purge requires and removes an exact Satchel state tree ---------------
+
+purge_bin="$test_home/uninstall-purge"
+mkdir -p "$purge_bin/.satchel/home/codex"
+cp "$repo_dir/satchel" "$purge_bin/satchel"
+chmod 755 "$purge_bin/satchel"
+printf 'MACHINE=uninstall-purge\nSYNC_URL=\n' > "$purge_bin/.satchel/config"
+printf '%s\n' "$purge_bin/satchel" > "$purge_bin/.satchel/install-path"
+printf 'login state\n' > "$purge_bin/.satchel/home/codex/auth.json"
+HOME="$test_home" "$purge_bin/satchel" link >/dev/null 2>&1
+
+set +e
+output="$(HOME="$test_home" "$purge_bin/satchel" uninstall --purge --yes 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "satchel uninstall --purge failed (rc=$rc)" "$output"
+[ ! -e "$purge_bin/satchel" ] || fail "purge left the command behind" "$output"
+[ ! -e "$purge_bin/.satchel" ] || fail "purge left the state directory behind" "$output"
+grep -q 'remote Sync Repo was not deleted' <<< "$output" \
+  || fail "purge did not distinguish local state from the remote Sync Repo" "$output"
+
+printf 'ok: satchel uninstall --purge removes local state\n'
+
+# --- uninstall refuses to delete an arbitrary checkout ----------------------
+
+foreign_state="$test_home/foreign-state"
+mkdir -p "$foreign_state"
+set +e
+output="$(HOME="$test_home" SATCHEL_DIR="$foreign_state" "$repo_dir/satchel" uninstall --yes 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "uninstall accepted an arbitrary checkout" "$output"
+[ -f "$repo_dir/satchel" ] || fail "uninstall deleted the project checkout's script" "$output"
+grep -q 'refusing to remove a checkout' <<< "$output" \
+  || fail "uninstall refusal did not explain the safety boundary" "$output"
+
+printf 'ok: satchel uninstall refuses arbitrary scripts\n'

@@ -78,6 +78,8 @@ if [ -n "$sha" ]; then
   mkdir -p "$STATE_DIR"
   printf '%s\n' "$sha" > "$STATE_DIR/script-sha"
 fi
+mkdir -p "$STATE_DIR"
+printf '%s\n' "$(readlink -f "$BIN/satchel")" > "$STATE_DIR/install-path"
 say "installed $BIN/satchel${sha:+ (commit ${sha:0:7})}"
 
 shims_installed=()

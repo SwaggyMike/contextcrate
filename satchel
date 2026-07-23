@@ -24,6 +24,7 @@ SYNC_DIR="$SATCHEL_DIR/sync"
 HOMES_DIR="$SATCHEL_DIR/home"
 LOCAL_TOKENS_FILE="$SATCHEL_DIR/mcp-tokens.local.env"
 SCRIPT_SHA_FILE="$SATCHEL_DIR/script-sha"
+INSTALL_PATH_FILE="$SATCHEL_DIR/install-path"
 IMAGE="localhost/satchel:latest"
 
 # Set by load_config / flags.
@@ -112,7 +113,10 @@ need_cmd() {
 # Where shims live — same priority as install.sh so 'satchel link' puts them
 # where the installer would have.
 shim_dir() {
+  local self_dir
+  self_dir="$(dirname "$(readlink -f "$0")")"
   if [ -n "${SATCHEL_BIN:-}" ]; then printf '%s' "$SATCHEL_BIN"
+  elif [ -d "$self_dir/.satchel" ]; then printf '%s' "$self_dir"
   elif [ -w /usr/local/bin ]; then printf '%s' "/usr/local/bin"
   else printf '%s' "$HOME/.local/bin"
   fi
@@ -177,6 +181,159 @@ cmd_unlink() {
     rm -f "$shim"
     info "unlinked '$agent' (removed $shim)"
   done
+}
+
+remove_file_for_uninstall() { # exact file/symlink only; sudo fallback
+  local path="$1"
+  if rm -f -- "$path" 2>/dev/null; then return 0; fi
+  command -v sudo >/dev/null 2>&1 || die "could not remove $path (permission denied; rerun as its owner or with sudo)"
+  sudo rm -f -- "$path"
+}
+
+remove_tree_for_uninstall() { # validated exact state tree only; sudo fallback
+  local path="$1"
+  if rm -rf -- "$path" 2>/dev/null; then return 0; fi
+  command -v sudo >/dev/null 2>&1 || die "could not remove $path (permission denied; rerun as its owner or with sudo)"
+  sudo rm -rf -- "$path"
+}
+
+installed_satchel_path() { # true only for an installer-owned script location
+  local self="$1" recorded="" self_dir
+  self_dir="$(dirname "$self")"
+  if [ -s "$INSTALL_PATH_FILE" ]; then
+    recorded="$(readlink -f "$(cat "$INSTALL_PATH_FILE")" 2>/dev/null || true)"
+    [ "$recorded" = "$self" ] && return 0
+  fi
+  case "$self" in
+    /usr/local/bin/satchel|"$HOME/.local/bin/satchel") return 0 ;;
+  esac
+  [ -d "$self_dir/.satchel" ] \
+    && [ "$(readlink -f "$self_dir/.satchel")" = "$(readlink -f "$SATCHEL_DIR")" ] \
+    && { [ -f "$self_dir/.satchel/script-sha" ] \
+         || grep -qs '^MACHINE=' "$self_dir/.satchel/config"; }
+}
+
+remove_unraid_boot_block() {
+  local go=/boot/config/go begin='# >>> satchel boot persistence >>>'
+  local end='# <<< satchel boot persistence <<<' tmp
+  [ -f /etc/unraid-version ] && [ -f "$go" ] || return 0
+  grep -qsF "$begin" "$go" || return 0
+  if ! grep -qsF "$end" "$go"; then
+    warn "the Satchel block in $go has no closing marker — leaving it untouched"
+    return 0
+  fi
+  tmp="$(mktemp)"
+  awk -v begin="$begin" -v end="$end" '
+    $0 == begin { skip=1; next }
+    $0 == end   { skip=0; next }
+    !skip       { print }
+  ' "$go" > "$tmp"
+  if cp -- "$tmp" "$go" 2>/dev/null; then
+    :
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo cp -- "$tmp" "$go"
+  else
+    rm -f "$tmp"
+    die "could not remove Satchel's boot-persistence block from $go"
+  fi
+  rm -f "$tmp"
+  info "removed Satchel boot persistence from $go"
+}
+
+remove_satchel_image() {
+  local e=""
+  if [ -n "${SATCHEL_ENGINE:-}" ] && command -v "$SATCHEL_ENGINE" >/dev/null 2>&1; then
+    e="$SATCHEL_ENGINE"
+  elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    e=docker
+  elif command -v podman >/dev/null 2>&1; then
+    e=podman
+  fi
+  [ -n "$e" ] || return 0
+  "$e" image inspect "$IMAGE" >/dev/null 2>&1 || return 0
+  if "$e" image rm "$IMAGE" >/dev/null 2>&1; then
+    info "removed container image $IMAGE"
+  else
+    warn "could not remove container image $IMAGE; remove it later with '$e image rm $IMAGE'"
+  fi
+}
+
+cmd_uninstall() {
+  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead
+  for arg in "$@"; do
+    case "$arg" in
+      --purge) purge=1 ;;
+      --yes|-y) yes=1 ;;
+      *) die "usage: satchel uninstall [--purge] [--yes]" ;;
+    esac
+  done
+
+  self="$(readlink -f "$0")"
+  installed_satchel_path "$self" \
+    || die "$self does not look like an installed Satchel command — refusing to remove a checkout or arbitrary script"
+  install_dir="$(dirname "$self")"
+  state="$(readlink -f "$SATCHEL_DIR")"
+  home_real="$(readlink -f "$HOME")"
+
+  if [ "$purge" -eq 1 ]; then
+    case "$state" in
+      /|"$home_real"|"$install_dir") die "refusing to purge unsafe state path $state" ;;
+    esac
+    if [ ! -f "$state/config" ] && [ ! -f "$state/install-path" ] \
+       && [ ! -d "$state/sync" ] && [ ! -d "$state/home" ]; then
+      die "$state does not look like a Satchel state directory — refusing to purge it"
+    fi
+    if [ -d "$state/sync/.git" ] && [ -n "$(git -C "$state/sync" status --porcelain 2>/dev/null)" ]; then
+      warn "the local Sync Repo has uncommitted changes; --purge will delete them"
+    fi
+    if git -C "$state/sync" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+      ahead="$(git -C "$state/sync" rev-list --count '@{u}..HEAD' 2>/dev/null || printf '0')"
+      [ "$ahead" -eq 0 ] || warn "the local Sync Repo has $ahead unpushed commit(s); --purge will delete them"
+    elif git -C "$state/sync" rev-parse HEAD >/dev/null 2>&1; then
+      warn "the local Sync Repo has no upstream; --purge may delete commits that exist only here"
+    fi
+    warn "--purge permanently deletes local agent logins, transcripts, tokens, and the Sync Repo clone at $state"
+    [ "$yes" -eq 1 ] || confirm "uninstall Satchel and permanently delete that state?" \
+      || { info "cancelled"; return 0; }
+  else
+    info "local state will be preserved at $state (Sync Repo clone, agent logins, and transcripts)"
+    [ "$yes" -eq 1 ] || confirm "uninstall the Satchel command and its Claude/Codex shims?" \
+      || { info "cancelled"; return 0; }
+  fi
+
+  remove_unraid_boot_block
+
+  # Unraid may have restored PATH symlinks into /usr/local/bin. Remove only
+  # links resolving back into this installation. Do this before their targets
+  # so readlink can still prove ownership.
+  for p in /usr/local/bin/satchel /usr/local/bin/claude /usr/local/bin/codex; do
+    [ -L "$p" ] || continue
+    target="$(readlink -f "$p" 2>/dev/null || true)"
+    case "$target" in
+      "$self"|"$install_dir/claude"|"$install_dir/codex")
+        remove_file_for_uninstall "$p"
+        info "removed link $p"
+        ;;
+    esac
+  done
+
+  # Remove only wrappers installed beside this exact Satchel script.
+  for agent in claude codex; do
+    p="$install_dir/$agent"
+    if is_satchel_shim "$p"; then
+      remove_file_for_uninstall "$p"
+      info "removed shim $p"
+    fi
+  done
+
+  remove_satchel_image
+  [ "$purge" -eq 0 ] || remove_tree_for_uninstall "$state"
+  remove_file_for_uninstall "$self"
+  if [ "$purge" -eq 1 ]; then
+    success "Satchel and its local state were removed; the remote Sync Repo was not deleted"
+  else
+    success "Satchel was removed; state remains at $state for a future reinstall"
+  fi
 }
 
 # The settings catalog — single source of truth for 'satchel settings', the
@@ -853,17 +1010,30 @@ latest_handoff() { # latest_handoff <project-id> → prints newest handoff
   return 0
 }
 
-# The handoff reaches the agent through its global memory file inside the
-# satchel-owned home (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md). Rewritten at
-# every session start, so it always reflects the current project and session
-# mode — the agent can't know on its own that /etc belongs to a disposable
-# container, or that a Host Session's real /etc lives under /host.
+# Agent-native path where Satchel mounts the one shared Skill Library.
+# Keep the mount, runtime environment, and generated instructions on this
+# single source of truth.
+session_skills_dir() {
+  case "$1" in
+    claude) printf '/home/satchel/.claude/skills' ;;
+    codex)  printf '/home/satchel/.codex/skills' ;;
+    *)      return 1 ;;
+  esac
+}
+
+# The handoff and Satchel runtime contract reach the agent through its global
+# memory file inside the satchel-owned home (~/.claude/CLAUDE.md,
+# ~/.codex/AGENTS.md). Rewritten at every session start, so it always reflects
+# the current project and session mode — the agent can't know on its own that
+# /etc belongs to a disposable container, or that a Host Session's real /etc
+# lives under /host.
 write_memory_file() { # write_memory_file <agent> <home> <slug> <project>
-  local agent="$1" home="$2" slug="$3" project="$4" target handoff from w context=""
+  local agent="$1" home="$2" slug="$3" project="$4" target handoff from w context="" skills_dir
   case "$agent" in
     claude) target="$home/.claude/CLAUDE.md" ;;
     codex)  target="$home/.codex/AGENTS.md" ;;
   esac
+  skills_dir="$(session_skills_dir "$agent")"
   mkdir -p "$(dirname "$target")"
   # Path-based attribution: which tracked projects can this session reach?
   local vis_paths=() vis_ids=() vp vi
@@ -890,13 +1060,13 @@ to the machine. When the user names an absolute path outside the project
 EOF
     else
       cat <<EOF
-This is a sandboxed Satchel session inside a disposable container. Only the
-project directory ($project) is mounted from the real machine; every other
-path (/etc, /usr, the user's home, ...) belongs to the container and is
-thrown away when the session ends. If the user asks about a file outside the
-project directory, you cannot see the machine's copy — say it is outside the
-sandbox rather than reporting it does not exist. (Reaching the machine
-itself takes a Host Session: restart with --host.)
+This is a sandboxed Satchel session inside a disposable container. The project
+directory ($project) and the Satchel-managed state described below are mounted
+from the real machine; other paths (/etc, /usr, the user's home, ...) belong
+to the container and are thrown away when the session ends. If the user asks
+about a file outside the project directory, you cannot see the machine's copy
+— say it is outside the sandbox rather than reporting it does not exist.
+(Reaching the machine itself takes a Host Session: restart with --host.)
 EOF
       if [ ${#WITH_DIRS[@]} -gt 0 ]; then
         printf '\nAlso mounted read-write at their real paths, as part of this working set (--with):\n'
@@ -929,6 +1099,28 @@ EOF
       esac
     fi
     if sync_ready; then
+      cat <<EOF
+
+## Satchel Skill Library
+
+You are running inside Satchel. Its shared Skill Library is mounted read-write
+at $skills_dir. This is the Sync Repo's \`skills/shared/\` tree, not disposable
+container state or an agent-local library: Claude and Codex sessions on every
+machine use the same tree.
+
+When the user asks to install a skill, put one complete skill directory
+directly under $skills_dir. Preserve the whole bundle — \`SKILL.md\` and every
+referenced \`references/\`, \`scripts/\`, and \`assets/\` file. Do not install a
+second copy elsewhere or use a generic agent-only destination. The runtime
+also exposes \`SATCHEL_SESSION=1\` and \`SATCHEL_SKILLS_DIR=$skills_dir\` so
+installers can detect this contract.
+
+Satchel pulled the Sync Repo before this session and commits and pushes Skill
+Library changes when the session exits, even when no handoff is written. If
+that best-effort push cannot reach the remote, the change remains in the local
+Sync Repo and \`satchel sync\` retries it. Start a new session before relying on
+a newly installed skill being discovered automatically.
+EOF
       printf '\n## Machine Notes (%s)\n\n' "$MACHINE"
       if [ -s "$SYNC_DIR/machines/$MACHINE/notes.md" ]; then
         cat "$SYNC_DIR/machines/$MACHINE/notes.md"
@@ -1682,10 +1874,11 @@ compose_clipboard_args() { # appends to RUN_ARGS
 }
 
 compose_run_args() { # compose_run_args <agent> <home> <project>
-  local agent="$1" home="$2" project="$3"
+  local agent="$1" home="$2" project="$3" skills_dir
+  skills_dir="$(session_skills_dir "$agent")"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
   # throwaway container can only fail or evaporate — 'satchel update' is the way.
-  RUN_ARGS=(-e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
+  RUN_ARGS=(-e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1 -e SATCHEL_SESSION=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
   # Machine Notes: durable facts about this machine, curated by agents
   # mid-session (same mechanism as the Skill Library - rw mount, synced by
@@ -1706,13 +1899,13 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   fi
   if [ "$agent" = claude ] && sync_ready; then
     mkdir -p "$SYNC_DIR/skills/shared" "$home/.claude"
-    RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:/home/satchel/.claude/skills")
+    RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:$skills_dir" -e "SATCHEL_SKILLS_DIR=$skills_dir")
   fi
   if [ "$agent" = codex ]; then
     compose_codex_mcp_env
     if sync_ready; then
       mkdir -p "$SYNC_DIR/skills/shared" "$home/.codex"
-      RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:/home/satchel/.codex/skills")
+      RUN_ARGS+=(-v "$SYNC_DIR/skills/shared:$skills_dir" -e "SATCHEL_SKILLS_DIR=$skills_dir")
     fi
   fi
   if ssh_forwarding; then
@@ -2451,6 +2644,8 @@ cmd_update() {
     mkdir -p "$SATCHEL_DIR"
     printf '%s\n' "$sha" > "$SCRIPT_SHA_FILE"
   fi
+  mkdir -p "$SATCHEL_DIR"
+  printf '%s\n' "$self" > "$INSTALL_PATH_FILE"
   # The rebuild IS the agent update: --pull + fresh npm install bakes in the
   # latest claude/codex, which sessions can't do for themselves.
   info "rebuilding the container image to pick up new agent versions…"
@@ -2498,6 +2693,8 @@ caravan
 setup
   satchel link [claude|codex]  redirect claude/codex commands through satchel
   satchel unlink [claude|codex] remove the redirects (use the native CLIs directly)
+  satchel uninstall             remove Satchel, its shims and image; preserve local state
+                               (--purge also deletes local state; --yes skips confirmation)
   satchel import claude|codex  copy this host's agent login into satchel's sessions
   satchel mcp list|add|remove  manage the MCP Registry (synced to every machine);
                              bare 'add' or 'remove' walks through it interactively
@@ -2507,9 +2704,9 @@ setup
   satchel update               self-update from git main + rebuild the image
   satchel version
 
-Skills: drop a folder into <sync>/skills/shared/ (or ask the agent to install
-one mid-session) and every machine's Claude and Codex sessions have it after
-a sync. Skills are shared across both agents — there is one skills tree.
+Skills: ask an agent to install one mid-session. Satchel tells it the exact
+read-write Skill Library path (also in SATCHEL_SKILLS_DIR), and session-end
+sync carries the complete skill folder to every machine and both agents.
 EOF
 }
 
@@ -2586,6 +2783,7 @@ main() {
     mcp)               cmd_mcp "$@" ;;
     link)              cmd_link "$@" ;;
     unlink)            cmd_unlink "$@" ;;
+    uninstall)         cmd_uninstall "$@" ;;
     import)            cmd_import "$@" ;;
     update)            cmd_update "$@" ;;
     version|--version) out_header "satchel $SATCHEL_VERSION" ;;

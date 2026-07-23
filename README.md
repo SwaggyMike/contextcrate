@@ -113,6 +113,21 @@ cp /boot/config/ssh/root/id_ed25519* /root/.ssh/ 2>/dev/null && chmod 600 /root/
 unencrypted FAT — fine for a key scoped to your private sync repo; use your
 judgment.)
 
+## Skill Library
+
+Satchel has one Skill Library for both agents and every machine. Inside a
+session it is mounted read-write at `/home/satchel/.claude/skills` for Claude
+or `/home/satchel/.codex/skills` for Codex. The generated session instructions
+identify that path as Satchel-managed, and `SATCHEL_SKILLS_DIR` exposes it to
+installers.
+
+Ask the agent to install a skill and it writes the complete folder there,
+including `SKILL.md` and any referenced `references/`, `scripts/`, or `assets/`
+files. Satchel commits and pushes the change when the session exits even when
+there is no handoff; `satchel sync` retries a failed/offline push. Start a new
+session before relying on the newly installed skill being discovered
+automatically.
+
 ## Commands
 
 | command | what it does |
@@ -131,6 +146,13 @@ judgment.)
 | `satchel settings` | show every setting and its value; `satchel settings <KEY> <value>` sets it caravan-wide, `--local` for one machine |
 | `satchel doctor` | check this machine's setup end to end — engine, image, key, sync, MCP endpoints |
 | `satchel update` | self-update from `main` (lists the commits it pulls in) and rebuild the agent image |
+| `satchel uninstall` | remove Satchel and its shims while preserving local state; `--purge` also deletes local state |
+
+`satchel uninstall` asks for confirmation, removes the installed command,
+Satchel-owned shims, and the Satchel container image, while keeping the local
+Sync Repo clone, agent logins, and transcripts so a reinstall can resume where
+it left off. `satchel uninstall --purge` explicitly deletes that local state
+too (not the remote Sync Repo); `--yes` makes either form non-interactive.
 
 ## What syncs, what doesn't
 

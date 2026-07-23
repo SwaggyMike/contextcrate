@@ -13,6 +13,9 @@ Two of its premises expired:
 
 - One tree: `sync/skills/shared/`. The per-agent `skills/claude/` and `skills/codex/` folders are gone; existing content migrates with `git mv skills/claude skills/shared`.
 - Both session types mount the tree read-write at the agent's native path. No copies, no materializer, no second source of truth.
+- The generated `CLAUDE.md` / `AGENTS.md` names that path as Satchel's authoritative installation target, requires complete skill bundles rather than lone `SKILL.md` files, and explains that session-end sync carries changes caravan-wide.
+- Sessions expose `SATCHEL_SESSION=1` and the agent-native path in `SATCHEL_SKILLS_DIR` so installers can detect the same contract mechanically instead of guessing from generic agent-home conventions.
+- Agent-native skill discovery occurs at startup. Installation is durable immediately, but a fresh session is the boundary at which the newly installed skill can be assumed to appear automatically.
 - A skill that misbehaves on one agent is handled inside the skill (frontmatter like `disable-model-invocation`), not by library placement. Codex ignores skill metadata it can't use per-skill; it does not fail the library.
 
 ## Consequences
