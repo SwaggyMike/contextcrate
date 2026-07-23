@@ -81,9 +81,11 @@ Each handoff directory keeps the latest ten files; older versions remain
 recoverable through Sync Repo history.
 
 The automatic handoff writer resumes the agent conversation with only that
-agent's local conversation home mounted. It cannot read the project, `/host`,
-SSH agent, clipboard, MCP tools, shared skills, or machine state; Satchel
-itself files the returned note afterward.
+agent's local conversation home mounted. An empty temporary filesystem at the
+original project path preserves cwd-based conversation selection without
+exposing project contents. It cannot read the project, `/host`, SSH agent,
+clipboard, MCP tools, shared skills, or machine state; Satchel itself files
+the returned note afterward.
 
 Each machine has a small, always-loaded `notes.md` for enduring operational
 facts and machine-wide risks, a dated `inventory.md` read only when system

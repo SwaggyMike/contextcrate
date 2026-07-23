@@ -141,9 +141,17 @@ compose_handoff_run_args() { # compose_handoff_run_args <agent> <home> <project>
   RUN_ARGS=(--init --label "$MANAGED_CONTAINER_LABEL"
     -e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}"
     -e DISABLE_AUTOUPDATER=1
-    -v "$home:/home/satchel" -w "$project"
+    -v "$home:/home/satchel"
     --user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL
     --security-opt no-new-privileges)
+  # Claude and Codex select the conversation to resume partly by its original
+  # cwd. Keep that exact path without mounting the real project: an empty
+  # tmpfs satisfies engines (notably Podman) that reject a nonexistent -w
+  # directory, and disappears with the helper container.
+  if [ "$project" != / ]; then
+    RUN_ARGS+=(--tmpfs "$project:rw,nosuid,nodev,noexec,mode=1777")
+  fi
+  RUN_ARGS+=(-w "$project")
   if selinux_active; then RUN_ARGS+=(--security-opt label=disable); fi
   if podman_rootless; then
     RUN_ARGS+=(--userns=keep-id --passwd-entry '$USERNAME:*:$UID:$GID::/home/satchel:/bin/bash')

@@ -31,6 +31,7 @@ compose_handoff_run_args codex "$tmp/agent-home" "$tmp/work/app"
 args=" ${RUN_ARGS[*]} "
 [[ "$args" == *" $tmp/agent-home:/home/satchel "* ]]
 [[ "$args" == *" -w $tmp/work/app "* ]]
+[[ "$args" == *" --tmpfs $tmp/work/app:rw,nosuid,nodev,noexec,mode=1777 "* ]]
 [[ "$args" != *" $tmp/work/app:$tmp/work/app "* ]]
 [[ "$args" != *" $tmp/work/extra:"* ]]
 [[ "$args" != *"/host"* ]]
@@ -42,6 +43,27 @@ args=" ${RUN_ARGS[*]} "
 [[ "$args" == *" --security-opt no-new-privileges "* ]]
 grep -q -- 'claude --continue --strict-mcp-config --tools ""' "$repo_dir/src/53-handoffs.sh"
 grep -q -- 'codex exec resume .*--ignore-user-config --ignore-rules' "$repo_dir/src/53-handoffs.sh"
+
+# Model Podman's stricter workdir validation: a missing -w path fails unless
+# the launch creates that exact destination as tmpfs first.
+podman_like="$tmp/podman-like"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'workdir=""' \
+  'tmpfs=""' \
+  'prev=""' \
+  'for arg in "$@"; do' \
+  '  case "$prev" in' \
+  '    -w) workdir="$arg" ;;' \
+  '    --tmpfs) tmpfs="${arg%%:*}" ;;' \
+  '  esac' \
+  '  prev="$arg"' \
+  'done' \
+  '[ -d "$workdir" ] || [ "$tmpfs" = "$workdir" ]' \
+  > "$podman_like"
+chmod +x "$podman_like"
+"$podman_like" run --rm "${RUN_ARGS[@]}" "$IMAGE" true
+
 HOST_MODE=0
 WITH_DIRS=()
 
