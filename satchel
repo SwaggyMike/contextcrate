@@ -761,8 +761,9 @@ RUN mkdir -p /home/satchel && chmod 0777 /home/satchel
 # OpenSSH resolves ~ through /etc/passwd, not $HOME: without this, sessions
 # read/write .ssh under /home/node or /root — ephemeral container paths — so
 # known_hosts never persists and root Host Sessions can hit dangling host
-# symlinks. Align the passwd homes with the mounted agent home.
-RUN usermod -d /home/satchel node && usermod -d /home/satchel root
+# symlinks. Rewrite only the passwd home field: Docker's legacy builder runs
+# this shell as root/PID 1, so usermod refuses to alter the active root account.
+RUN sed -Ei 's#^((root|node):[^:]*:[^:]*:[^:]*:[^:]*:)[^:]*:#\1/home/satchel:#' /etc/passwd
 WORKDIR /home/satchel
 DOCKERFILE
   rm -rf "$ctx"

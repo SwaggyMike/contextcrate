@@ -60,9 +60,15 @@ grep -q 'no ssh-agent answered' <(SSH_STATE=dead ssh_preflight 2>&1)
 [ -z "$(SSH_STATE=off ssh_preflight 2>&1)" ]
 
 # SSH-home fix: ssh resolves ~ via /etc/passwd, not $HOME, so the image must
-# align the passwd homes of node and root with the mounted agent home.
-grep -q 'usermod -d /home/satchel node' "$repo_dir/satchel"
-grep -q 'usermod -d /home/satchel root' "$repo_dir/satchel"
+# align the passwd homes of node and root with the mounted agent home. A direct
+# field rewrite works while root is Docker's active PID 1; usermod does not.
+grep -q "RUN sed -Ei .*root|node.* /etc/passwd" "$repo_dir/satchel"
+! grep -q 'usermod -d /home/satchel root' "$repo_dir/satchel"
+passwd_fixture="$tmp/passwd"
+printf 'root:x:0:0:root:/root:/bin/bash\nnode:x:1000:1000::/home/node:/bin/bash\n' > "$passwd_fixture"
+sed -Ei 's#^((root|node):[^:]*:[^:]*:[^:]*:[^:]*:)[^:]*:#\1/home/satchel:#' "$passwd_fixture"
+[ "$(awk -F: '$1 == "root" { print $6 }' "$passwd_fixture")" = /home/satchel ]
+[ "$(awk -F: '$1 == "node" { print $6 }' "$passwd_fixture")" = /home/satchel ]
 
 # Custom SATCHEL_UID under rootless podman: keep-id's invented passwd entry
 # must point home at /home/satchel; no such flag reaches other engines.

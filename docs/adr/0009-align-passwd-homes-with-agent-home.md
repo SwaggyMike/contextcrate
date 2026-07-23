@@ -24,10 +24,12 @@ notes"). The only reader of a machine's notes was that machine itself.
 
 ## Decision
 
-- `build_image` runs `usermod -d /home/satchel node` and the same for
-  `root`: every tool that consults passwd (ssh foremost) now agrees with
-  `$HOME` about where home is. This covers the whole caravan — sandboxed
-  sessions run as UID 1000, root Host Sessions as UID 0.
+- `build_image` rewrites only the home field of the `node` and `root` records
+  in `/etc/passwd`: every tool that consults passwd (ssh foremost) now agrees
+  with `$HOME` about where home is. A direct field rewrite is required because
+  Docker's legacy builder runs the build shell as root/PID 1, and Debian's
+  `usermod` refuses to alter an account currently in use. This covers the whole
+  caravan — sandboxed sessions run as UID 1000, root Host Sessions as UID 0.
 - Rootless podman launches add
   `--passwd-entry '$USERNAME:*:$UID:$GID::/home/satchel:/bin/bash'` beside
   `--userns=keep-id`, so a custom `SATCHEL_UID` absent from the image's
