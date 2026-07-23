@@ -54,8 +54,12 @@ cmd_sync() {
 
 quiet_pull() { # best-effort, at session start; offline is fine
   sync_ready && has_upstream || return 0
-  timeout 20 git -C "$SYNC_DIR" pull --rebase -q 2>/dev/null \
-    || warn "could not pull the Sync Repo (offline, or uncommitted changes in it) — continuing with what's local"
+  local rc=0
+  timeout 20 git -C "$SYNC_DIR" pull --rebase --autostash -q 2>/dev/null || rc=$?
+  [ "$rc" -eq 130 ] && return 130
+  [ "$rc" -eq 0 ] \
+    || warn "could not pull the Sync Repo (offline, or the update conflicted) — continuing with what's local"
+  return 0
 }
 
 # One "session:" commit per session buries the Sync Repo's history in noise.
@@ -106,12 +110,18 @@ remote_script_blob() {
 }
 
 update_check() {
-  local stamp="$SATCHEL_DIR/update-check" now last remote
+  local stamp="$SATCHEL_DIR/update-check" now last remote rc=0
   now="$(date +%s)"
-  last="$(tr -cd 0-9 < "$stamp" 2>/dev/null)" || last=""
+  if [ -f "$stamp" ]; then
+    last="$(tr -cd 0-9 < "$stamp")" || last=""
+  else
+    last=""
+  fi
   [ $((now - ${last:-0})) -lt 86400 ] && return 0
   printf '%s' "$now" > "$stamp"
-  remote="$(remote_script_blob)" || remote=""
+  remote="$(remote_script_blob)" || rc=$?
+  [ "$rc" -eq 130 ] && return 130
+  [ "$rc" -eq 0 ] || remote=""
   [ -n "$remote" ] && [ "$remote" != "$(script_blob)" ] \
     && info "a newer satchel is on GitHub - run 'satchel update' when convenient"
   return 0

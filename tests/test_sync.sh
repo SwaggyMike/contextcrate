@@ -64,6 +64,25 @@ grep -q eight <(git_sync show --stat --format= HEAD)
 ! grep -q seven <(git_sync show --stat --format= HEAD)
 [ "$(origin_head)" = "$(git_sync rev-parse HEAD)" ]
 
+# An interrupted launch can leave a legitimate machine path-cache change
+# uncommitted. The next quiet pull preserves it while integrating remote work.
+git -C "$other" pull -q --rebase
+git -C "$other" -c user.name=o -c user.email=o@o commit -q --allow-empty -m "remote before dirty pull"
+git -C "$other" push -q origin main
+printf 'local cache\n' > "$SYNC_DIR/local-dirty"
+quiet_pull
+grep -q 'remote before dirty pull' <(git_sync log --oneline)
+grep -q '^local cache$' "$SYNC_DIR/local-dirty"
+[ -n "$(git_sync status --porcelain -- local-dirty)" ]
+
+# A user interrupt is not an offline pull. It must stop session startup rather
+# than print a warning and continue through later initialization.
+timeout() { return 130; }
+rc=0
+quiet_pull >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 130 ]
+unset -f timeout
+
 # Re-running init on a stale clone must integrate another machine's commit
 # before pushing its own registration, rather than misdiagnosing the normal
 # non-fast-forward rejection as a read-only deploy key.

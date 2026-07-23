@@ -42,6 +42,14 @@ temp_sock="$SSH_AUTH_SOCK"
 stop_temporary_ssh_agent
 [ ! -e "$temp_sock" ]
 [ -z "$TEMP_SSH_AGENT_PID" ]
+
+# Interrupting passphrase entry stops launch and cleans up the agent.
+set_ssh_add_rc 130
+rc=0
+start_temporary_ssh_agent >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 130 ]
+[ -z "$TEMP_SSH_AGENT_PID" ]
+[ -z "$TEMP_SSH_AGENT_DIR" ]
 rm "$HOME/.ssh/id_ed25519"
 
 # The socket is mounted only when an agent answers on it.
@@ -70,6 +78,12 @@ grep -q 'cannot authenticate' <(preamble off)
 # the impact before continuing; ready and opted-out sessions stay calm.
 set_ssh_add_rc 1
 grep -q 'git push over SSH will not work' <(SSH_STATE=empty ssh_preflight </dev/null 2>&1)
+touch "$HOME/.ssh/id_ed25519"
+set_ssh_add_rc 130
+rc=0
+SSH_STATE=empty ssh_preflight </dev/null >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 130 ]
+rm "$HOME/.ssh/id_ed25519"
 start_temporary_ssh_agent() { SSH_STATE=ready; TEMP_SSH_AGENT_PID=123; return 0; }
 touch "$HOME/.ssh/id_ed25519"
 [ -z "$(SSH_STATE=none TEMP_SSH_AGENT_PID= ssh_preflight 2>&1)" ]

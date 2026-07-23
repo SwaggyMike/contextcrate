@@ -81,17 +81,19 @@ stop_temporary_ssh_agent() {
 }
 
 start_temporary_ssh_agent() {
-  local out sock pid key
+  local out sock pid key rc=0
   local keys=()
   while IFS= read -r key; do keys+=("$key"); done < <(standard_private_keys)
   [ ${#keys[@]} -gt 0 ] || return 1
   TEMP_SSH_AGENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/satchel-ssh-agent.XXXXXX")"
   sock="$TEMP_SSH_AGENT_DIR/agent.sock"
-  out="$(ssh-agent -a "$sock" -s 2>/dev/null)" || {
+  out="$(ssh-agent -a "$sock" -s 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
     rmdir -- "$TEMP_SSH_AGENT_DIR" 2>/dev/null || true
     TEMP_SSH_AGENT_DIR=""
+    [ "$rc" -eq 130 ] && return 130
     return 1
-  }
+  fi
   pid="$(printf '%s\n' "$out" | sed -n 's/^SSH_AGENT_PID=\([0-9][0-9]*\);.*/\1/p')"
   if [ -z "$pid" ]; then
     rmdir -- "$TEMP_SSH_AGENT_DIR" 2>/dev/null || true
@@ -101,7 +103,9 @@ start_temporary_ssh_agent() {
   TEMP_SSH_AGENT_PID="$pid"
   SSH_AUTH_SOCK="$sock"
   export SSH_AUTH_SOCK
-  if ssh-add "${keys[@]}"; then
+  rc=0
+  ssh-add "${keys[@]}" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     # Root-run hosts launch normal sessions as SATCHEL_UID. This socket belongs
     # only to the current session, so grant that exact user access to it.
     if [ "$(id -u)" -eq 0 ] && [ "$HOST_MODE" -eq 0 ]; then
@@ -114,6 +118,7 @@ start_temporary_ssh_agent() {
     return 0
   fi
   stop_temporary_ssh_agent
+  [ "$rc" -eq 130 ] && return 130
   return 1
 }
 
@@ -151,7 +156,7 @@ ssh_forwarding() {
 # Session-start preflight: say up front what git-over-SSH will do, instead of
 # letting the first push inside the sandbox fail mysteriously.
 ssh_preflight() {
-  local state="${SSH_STATE:=$(ssh_agent_state)}" key
+  local state="${SSH_STATE:=$(ssh_agent_state)}" key rc=0
   local keys=()
   while IFS= read -r key; do keys+=("$key"); done < <(standard_private_keys)
 
@@ -164,15 +169,23 @@ ssh_preflight() {
 
   case "$state" in
     empty)
-      if [ ${#keys[@]} -gt 0 ] && ssh-add "${keys[@]}"; then
-        SSH_STATE=ready
-        return 0
+      if [ ${#keys[@]} -gt 0 ]; then
+        rc=0
+        ssh-add "${keys[@]}" || rc=$?
+        [ "$rc" -eq 130 ] && return 130
+        if [ "$rc" -eq 0 ]; then
+          SSH_STATE=ready
+          return 0
+        fi
       fi
       pause_without_ssh "ssh-agent has no usable standard key — git push over SSH will not work in this session; load a key with ssh-add, or set SATCHEL_SSH=0 if SSH is not needed"
       ;;
     dead|none)
-      if [ ${#keys[@]} -gt 0 ] && start_temporary_ssh_agent; then
-        return 0
+      if [ ${#keys[@]} -gt 0 ]; then
+        rc=0
+        start_temporary_ssh_agent || rc=$?
+        [ "$rc" -eq 130 ] && return 130
+        [ "$rc" -ne 0 ] || return 0
       fi
       SSH_STATE="$state"
       pause_without_ssh "no usable ssh-agent or standard key — git push over SSH will not work in this session; start/load an agent, or set SATCHEL_SSH=0 if SSH is not needed"

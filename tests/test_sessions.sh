@@ -104,6 +104,14 @@ grep -q 'nested-container setup' <<< "$nested_output"
 validate_state_removal_path "$(readlink -f "$SATCHEL_DIR")" "$tmp/install"
 ! (validate_state_removal_path "$(readlink -f "$tmp/work")" "$tmp/install" 2>/dev/null)
 
+# Session startup propagates an interrupted best-effort pull immediately.
+ensure_image() { :; }
+require_supported_engine_mounts() { :; }
+quiet_pull() { return 130; }
+rc=0
+(cd "$tmp/work/app" && cmd_session codex) >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 130 ]
+
 # Full session lifecycle: materialize first, prepare ownership at the final
 # host-write boundary, launch, detect the new transcript, write a handoff, and
 # sync. The fake engine records launch arguments and creates that transcript.

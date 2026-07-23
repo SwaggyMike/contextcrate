@@ -24,7 +24,9 @@ set_remote_blob() {
 
 # Newer script on GitHub: announce it.
 set_remote_blob 0000000000000000000000000000000000000000
-grep -q "satchel update" <(update_check 2>&1)
+first_output="$(update_check 2>&1)"
+grep -q "satchel update" <<< "$first_output"
+! grep -q 'No such file or directory' <<< "$first_output"
 
 # Second call the same day: silent, and no network probe at all.
 rm -f "$STUB_HIT"
@@ -41,5 +43,12 @@ set_remote_blob "$(git hash-object "$0")"
 printf '0' > "$SATCHEL_DIR/update-check"
 printf '#!/bin/sh\nexit 7\n' > "$stub/curl"; chmod +x "$stub/curl"
 [ -z "$(update_check 2>&1)" ]
+
+# Ctrl-C is not an offline condition: propagate it so session launch stops.
+printf '0' > "$SATCHEL_DIR/update-check"
+printf '#!/bin/sh\nexit 130\n' > "$stub/curl"; chmod +x "$stub/curl"
+rc=0
+update_check >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 130 ]
 
 printf 'ok: update availability check\n'

@@ -250,14 +250,14 @@ cmd_session() {
   if ! sync_ready; then
     warn "sync is not set up (run 'satchel init') — session is sandboxed but nothing will sync"
   fi
-  quiet_pull
+  quiet_pull || return $?
   if sync_ready; then
     validate_sync_state
     ensure_skill_library
     repair_skill_library 0
   fi
   prune_all_handoffs
-  update_check
+  update_check || return $?
   refresh_project_paths "$project"
   slug="$(project_for_path "$project")"
 
@@ -278,7 +278,7 @@ cmd_session() {
   # Install cleanup first so Ctrl-C during a passphrase prompt cannot leave a
   # temporary agent behind.
   trap 'stop_temporary_ssh_agent' EXIT
-  ssh_preflight
+  ssh_preflight || return $?
   local temporary_agent=0
   if [ -n "$TEMP_SSH_AGENT_PID" ]; then
     temporary_agent=1

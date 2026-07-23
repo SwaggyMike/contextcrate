@@ -582,17 +582,19 @@ stop_temporary_ssh_agent() {
 }
 
 start_temporary_ssh_agent() {
-  local out sock pid key
+  local out sock pid key rc=0
   local keys=()
   while IFS= read -r key; do keys+=("$key"); done < <(standard_private_keys)
   [ ${#keys[@]} -gt 0 ] || return 1
   TEMP_SSH_AGENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/satchel-ssh-agent.XXXXXX")"
   sock="$TEMP_SSH_AGENT_DIR/agent.sock"
-  out="$(ssh-agent -a "$sock" -s 2>/dev/null)" || {
+  out="$(ssh-agent -a "$sock" -s 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
     rmdir -- "$TEMP_SSH_AGENT_DIR" 2>/dev/null || true
     TEMP_SSH_AGENT_DIR=""
+    [ "$rc" -eq 130 ] && return 130
     return 1
-  }
+  fi
   pid="$(printf '%s\n' "$out" | sed -n 's/^SSH_AGENT_PID=\([0-9][0-9]*\);.*/\1/p')"
   if [ -z "$pid" ]; then
     rmdir -- "$TEMP_SSH_AGENT_DIR" 2>/dev/null || true
@@ -602,7 +604,9 @@ start_temporary_ssh_agent() {
   TEMP_SSH_AGENT_PID="$pid"
   SSH_AUTH_SOCK="$sock"
   export SSH_AUTH_SOCK
-  if ssh-add "${keys[@]}"; then
+  rc=0
+  ssh-add "${keys[@]}" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     # Root-run hosts launch normal sessions as SATCHEL_UID. This socket belongs
     # only to the current session, so grant that exact user access to it.
     if [ "$(id -u)" -eq 0 ] && [ "$HOST_MODE" -eq 0 ]; then
@@ -615,6 +619,7 @@ start_temporary_ssh_agent() {
     return 0
   fi
   stop_temporary_ssh_agent
+  [ "$rc" -eq 130 ] && return 130
   return 1
 }
 
@@ -652,7 +657,7 @@ ssh_forwarding() {
 # Session-start preflight: say up front what git-over-SSH will do, instead of
 # letting the first push inside the sandbox fail mysteriously.
 ssh_preflight() {
-  local state="${SSH_STATE:=$(ssh_agent_state)}" key
+  local state="${SSH_STATE:=$(ssh_agent_state)}" key rc=0
   local keys=()
   while IFS= read -r key; do keys+=("$key"); done < <(standard_private_keys)
 
@@ -665,15 +670,23 @@ ssh_preflight() {
 
   case "$state" in
     empty)
-      if [ ${#keys[@]} -gt 0 ] && ssh-add "${keys[@]}"; then
-        SSH_STATE=ready
-        return 0
+      if [ ${#keys[@]} -gt 0 ]; then
+        rc=0
+        ssh-add "${keys[@]}" || rc=$?
+        [ "$rc" -eq 130 ] && return 130
+        if [ "$rc" -eq 0 ]; then
+          SSH_STATE=ready
+          return 0
+        fi
       fi
       pause_without_ssh "ssh-agent has no usable standard key — git push over SSH will not work in this session; load a key with ssh-add, or set SATCHEL_SSH=0 if SSH is not needed"
       ;;
     dead|none)
-      if [ ${#keys[@]} -gt 0 ] && start_temporary_ssh_agent; then
-        return 0
+      if [ ${#keys[@]} -gt 0 ]; then
+        rc=0
+        start_temporary_ssh_agent || rc=$?
+        [ "$rc" -eq 130 ] && return 130
+        [ "$rc" -ne 0 ] || return 0
       fi
       SSH_STATE="$state"
       pause_without_ssh "no usable ssh-agent or standard key — git push over SSH will not work in this session; start/load an agent, or set SATCHEL_SSH=0 if SSH is not needed"
@@ -2046,8 +2059,12 @@ cmd_sync() {
 
 quiet_pull() { # best-effort, at session start; offline is fine
   sync_ready && has_upstream || return 0
-  timeout 20 git -C "$SYNC_DIR" pull --rebase -q 2>/dev/null \
-    || warn "could not pull the Sync Repo (offline, or uncommitted changes in it) — continuing with what's local"
+  local rc=0
+  timeout 20 git -C "$SYNC_DIR" pull --rebase --autostash -q 2>/dev/null || rc=$?
+  [ "$rc" -eq 130 ] && return 130
+  [ "$rc" -eq 0 ] \
+    || warn "could not pull the Sync Repo (offline, or the update conflicted) — continuing with what's local"
+  return 0
 }
 
 # One "session:" commit per session buries the Sync Repo's history in noise.
@@ -2098,12 +2115,18 @@ remote_script_blob() {
 }
 
 update_check() {
-  local stamp="$SATCHEL_DIR/update-check" now last remote
+  local stamp="$SATCHEL_DIR/update-check" now last remote rc=0
   now="$(date +%s)"
-  last="$(tr -cd 0-9 < "$stamp" 2>/dev/null)" || last=""
+  if [ -f "$stamp" ]; then
+    last="$(tr -cd 0-9 < "$stamp")" || last=""
+  else
+    last=""
+  fi
   [ $((now - ${last:-0})) -lt 86400 ] && return 0
   printf '%s' "$now" > "$stamp"
-  remote="$(remote_script_blob)" || remote=""
+  remote="$(remote_script_blob)" || rc=$?
+  [ "$rc" -eq 130 ] && return 130
+  [ "$rc" -eq 0 ] || remote=""
   [ -n "$remote" ] && [ "$remote" != "$(script_blob)" ] \
     && info "a newer satchel is on GitHub - run 'satchel update' when convenient"
   return 0
@@ -2598,14 +2621,14 @@ cmd_session() {
   if ! sync_ready; then
     warn "sync is not set up (run 'satchel init') — session is sandboxed but nothing will sync"
   fi
-  quiet_pull
+  quiet_pull || return $?
   if sync_ready; then
     validate_sync_state
     ensure_skill_library
     repair_skill_library 0
   fi
   prune_all_handoffs
-  update_check
+  update_check || return $?
   refresh_project_paths "$project"
   slug="$(project_for_path "$project")"
 
@@ -2626,7 +2649,7 @@ cmd_session() {
   # Install cleanup first so Ctrl-C during a passphrase prompt cannot leave a
   # temporary agent behind.
   trap 'stop_temporary_ssh_agent' EXIT
-  ssh_preflight
+  ssh_preflight || return $?
   local temporary_agent=0
   if [ -n "$TEMP_SSH_AGENT_PID" ]; then
     temporary_agent=1
