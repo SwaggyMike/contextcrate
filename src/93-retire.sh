@@ -1,6 +1,50 @@
 
 # ----------------------------------------------------------------- retire
 
+rollback_retirement() { # rollback_retirement <pre-retirement-head> <machine>
+  local before="$1" target="$2"
+  git_sync reset -q --mixed "$before"
+  git_sync restore -q --source="$before" --staged --worktree -- "machines/$target"
+}
+
+retire_machine_from_caravan() { # retire_machine_from_caravan <machine> [strict]
+  local target="$1" strict="${2:-0}" before
+  ensure_sync_identity
+
+  if [ "$strict" -eq 1 ]; then
+    if [ -n "$(git_sync status --porcelain)" ]; then
+      warn "the Sync Repo has uncommitted changes — run 'satchel sync' before retiring '$target'"
+      return 1
+    fi
+    if has_upstream && ! timeout 30 git -C "$SYNC_DIR" pull --rebase -q; then
+      warn "could not update the Sync Repo — retirement was not attempted"
+      return 1
+    fi
+    [ -d "$SYNC_DIR/machines/$target" ] \
+      || { info "'$target' is already absent from the caravan"; return 0; }
+    before="$(git_sync rev-parse HEAD)"
+    if ! git_sync rm -rq -- "machines/$target" \
+      || ! git_sync commit -q -m "retire $target"; then
+      rollback_retirement "$before" "$target"
+      warn "could not commit retirement of '$target'; local Sync Repo restored"
+      return 1
+    fi
+    if ! timeout 30 git -C "$SYNC_DIR" push -q -u origin HEAD; then
+      rollback_retirement "$before" "$target"
+      warn "could not push retirement of '$target'; local Sync Repo restored"
+      return 1
+    fi
+  else
+    git_sync rm -rq -- "machines/$target"
+    git_sync commit -q -m "retire $target"
+    if has_upstream && ! git_sync pull --rebase -q; then
+      die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'satchel sync'"
+    fi
+    git_sync push -q -u origin HEAD || warn "could not push — run 'satchel sync' when the remote is reachable"
+  fi
+  info "'$target' retired from the caravan"
+}
+
 cmd_retire() {
   sync_ready || die "sync is not set up — run 'satchel init' first"
   quiet_pull
@@ -28,15 +72,7 @@ cmd_retire() {
   [ -d "$SYNC_DIR/machines/$target" ] || die "no machine '$target' in the caravan"
 
   confirm "retire '$target' — delete its folder from the Sync Repo? (git history keeps it)" || { info "cancelled"; return 0; }
-
-  ensure_sync_identity
-  git_sync rm -rq -- "machines/$target"
-  git_sync commit -q -m "retire $target"
-  if has_upstream && ! git_sync pull --rebase -q; then
-    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'satchel sync'"
-  fi
-  git_sync push -q -u origin HEAD || warn "could not push — run 'satchel sync' when the remote is reachable"
-  info "'$target' retired from the caravan"
+  retire_machine_from_caravan "$target"
 
   if [ "$target" = "$MACHINE" ]; then
     warn "that was this machine — its local state ($SATCHEL_DIR) still exists: config, agent logins, the sync clone"

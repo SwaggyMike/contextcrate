@@ -7,6 +7,24 @@ trap 'rm -rf "$test_home"' EXIT
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; [ $# -gt 1 ] && printf '%s\n' "$2" >&2; exit 1; }
 
+make_retire_fixture() { # make_retire_fixture <install-dir> <machine> <bare-origin>
+  local bin="$1" machine="$2" origin="$3" state="$1/.satchel"
+  git init -q --bare --initial-branch=main "$origin"
+  mkdir -p "$state"
+  git clone -q "$origin" "$state/sync" 2>/dev/null
+  git -C "$state/sync" config user.name test
+  git -C "$state/sync" config user.email test@example.com
+  mkdir -p "$state/sync/machines/$machine"
+  printf 'machine notes\n' > "$state/sync/machines/$machine/notes.md"
+  git -C "$state/sync" add -A
+  git -C "$state/sync" commit -q -m "add machine $machine"
+  git -C "$state/sync" push -q -u origin main
+  cp "$repo_dir/satchel" "$bin/satchel"
+  chmod 755 "$bin/satchel"
+  printf 'MACHINE=%q\nSYNC_URL=%q\n' "$machine" "$origin" > "$state/config"
+  printf '%s\n' "$bin/satchel" > "$state/install-path"
+}
+
 # The installer only checks that a container engine command exists; stub one
 # so the tests run on machines without docker/podman.
 stub_bin="$test_home/stub-bin"
@@ -427,6 +445,84 @@ grep -q 'permanently deletes' <<< "$output" \
   || fail "complete choice did not warn before deleting local state" "$output"
 
 printf 'ok: interactive uninstall can purge local state\n'
+
+# Interactive uninstall independently offers retirement of only the current
+# registered machine, then pushes that narrow deletion before local removal.
+retire_bin="$test_home/uninstall-retire"
+retire_origin="$test_home/uninstall-retire.git"
+make_retire_fixture "$retire_bin" office "$retire_origin"
+
+set +e
+output="$(printf '1\ny\n' | HOME="$test_home" "$retire_bin/satchel" uninstall 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "uninstall with retirement failed (rc=$rc)" "$output"
+[ ! -e "$retire_bin/satchel" ] || fail "retiring uninstall left the command behind" "$output"
+[ -d "$retire_bin/.satchel" ] || fail "program-only retirement deleted local state" "$output"
+[ -z "$(git --git-dir="$retire_origin" ls-tree -r --name-only main -- machines/office)" ] \
+  || fail "retiring uninstall left the machine in the upstream Sync Repo" "$output"
+grep -q "Retire 'office' from the caravan too" <<< "$output" \
+  || fail "interactive uninstall did not offer current-machine retirement" "$output"
+grep -q "'office' retired from the caravan" <<< "$output" \
+  || fail "interactive uninstall did not report successful retirement" "$output"
+
+printf 'ok: interactive uninstall can retire the current machine\n'
+
+# Declining retirement and non-interactive --yes both leave the caravan
+# untouched. Reinstall the command between the two removals while preserving
+# the same local state clone.
+decline_bin="$test_home/uninstall-retire-decline"
+decline_origin="$test_home/uninstall-retire-decline.git"
+make_retire_fixture "$decline_bin" keeper "$decline_origin"
+
+set +e
+output="$(HOME="$test_home" "$decline_bin/satchel" uninstall --yes 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "non-interactive uninstall failed (rc=$rc)" "$output"
+[ -n "$(git --git-dir="$decline_origin" ls-tree -r --name-only main -- machines/keeper)" ] \
+  || fail "--yes unexpectedly retired the current machine" "$output"
+! grep -q 'Retire .* from the caravan too' <<< "$output" \
+  || fail "--yes unexpectedly offered interactive retirement" "$output"
+
+cp "$repo_dir/satchel" "$decline_bin/satchel"
+chmod 755 "$decline_bin/satchel"
+printf '%s\n' "$decline_bin/satchel" > "$decline_bin/.satchel/install-path"
+set +e
+output="$(printf '1\nn\n' | HOME="$test_home" "$decline_bin/satchel" uninstall 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "uninstall after declining retirement failed (rc=$rc)" "$output"
+[ -n "$(git --git-dir="$decline_origin" ls-tree -r --name-only main -- machines/keeper)" ] \
+  || fail "declining retirement removed the current machine" "$output"
+
+printf 'ok: retirement remains an independent interactive choice\n'
+
+# A rejected retirement push restores the exact clean pre-retirement state and
+# stops before uninstall removes the command, shims, image, or local state.
+failed_retire_bin="$test_home/uninstall-retire-failed"
+failed_retire_origin="$test_home/uninstall-retire-failed.git"
+make_retire_fixture "$failed_retire_bin" stays-put "$failed_retire_origin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$failed_retire_origin/hooks/pre-receive"
+chmod 755 "$failed_retire_origin/hooks/pre-receive"
+failed_retire_head="$(git -C "$failed_retire_bin/.satchel/sync" rev-parse HEAD)"
+
+set +e
+output="$(printf '1\ny\n' | HOME="$test_home" "$failed_retire_bin/satchel" uninstall 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "uninstall continued after retirement push failure" "$output"
+[ -x "$failed_retire_bin/satchel" ] || fail "failed retirement removed the Satchel command" "$output"
+[ -f "$failed_retire_bin/.satchel/sync/machines/stays-put/notes.md" ] \
+  || fail "failed retirement did not restore the machine folder" "$output"
+[ "$(git -C "$failed_retire_bin/.satchel/sync" rev-parse HEAD)" = "$failed_retire_head" ] \
+  || fail "failed retirement did not restore the previous Sync Repo commit" "$output"
+[ -z "$(git -C "$failed_retire_bin/.satchel/sync" status --porcelain)" ] \
+  || fail "failed retirement left the Sync Repo dirty" "$(git -C "$failed_retire_bin/.satchel/sync" status --short)"
+grep -q 'uninstall stopped before removing anything' <<< "$output" \
+  || fail "failed retirement did not explain the safe stop" "$output"
+
+printf 'ok: failed retirement leaves uninstall retryable\n'
 
 # --- --purge requires and removes an exact Satchel state tree ---------------
 

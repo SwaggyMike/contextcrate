@@ -171,6 +171,13 @@ deletes that local state, but never the remote Sync Repo. For automation,
 `--yes` keeps local state and `--purge --yes` removes it. Purging loses any
 uncommitted or unpushed work in the local Sync Repo clone.
 
+During interactive uninstall, Satchel also offers to retire the current
+machine when it is registered in the caravan. Retirement removes only that
+machine's folder from the upstream Sync Repo; it leaves Projects, shared
+state, other machines, and the repository itself untouched. Declining simply
+continues uninstall, while a failed retirement stops before local removal.
+Non-interactive `--yes` never retires a machine.
+
 ## What syncs, what doesn't
 
 The Sync Repo's root `profile.md` and `preferences.md` are global.

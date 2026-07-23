@@ -208,8 +208,27 @@ choose_uninstall_scope() {
   esac
 }
 
+offer_uninstall_retirement() {
+  sync_ready || return 0
+  [ -d "$SYNC_DIR/machines/$MACHINE" ] || return 0
+  printf '%s\n' \
+    '' \
+    "Retire '$MACHINE' from the caravan too?" \
+    "This removes only machines/$MACHINE/ from the upstream private Sync Repo:" \
+    'machine notes, inventory, guides, path cache, and machine handoffs.' \
+    'Projects, Project handoffs, shared skills, MCP settings, other machines,' \
+    'and the upstream repository itself are untouched. Git history retains the folder.' >&2
+  if confirm "retire '$MACHINE' from the caravan?"; then
+    if ! retire_machine_from_caravan "$MACHINE" 1; then
+      warn "retirement failed — uninstall stopped before removing anything"
+      return 1
+    fi
+  fi
+  return 0
+}
+
 cmd_uninstall() {
-  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead
+  local purge=0 yes=0 interactive=1 arg self install_dir state home_real p target agent ahead
   local shim_root seen_key scope seen_shims=$'\n'
   for arg in "$@"; do
     case "$arg" in
@@ -218,6 +237,7 @@ cmd_uninstall() {
       *) die "usage: satchel uninstall [--purge] [--yes]" ;;
     esac
   done
+  [ "$yes" -eq 0 ] || interactive=0
 
   self="$(readlink -f "$0")"
   installed_satchel_path "$self" \
@@ -260,6 +280,10 @@ cmd_uninstall() {
     [ "$yes" -eq 1 ] || confirm "uninstall the Satchel command and its Claude/Codex shims?" \
       || { info "cancelled"; return 0; }
   fi
+
+  # Retirement mutates the shared Sync Repo and is offered only during the
+  # human-guided flow; --yes never expands into a global caravan change.
+  [ "$interactive" -eq 0 ] || offer_uninstall_retirement || return 1
 
   remove_unraid_boot_block
 

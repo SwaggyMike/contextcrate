@@ -324,8 +324,27 @@ choose_uninstall_scope() {
   esac
 }
 
+offer_uninstall_retirement() {
+  sync_ready || return 0
+  [ -d "$SYNC_DIR/machines/$MACHINE" ] || return 0
+  printf '%s\n' \
+    '' \
+    "Retire '$MACHINE' from the caravan too?" \
+    "This removes only machines/$MACHINE/ from the upstream private Sync Repo:" \
+    'machine notes, inventory, guides, path cache, and machine handoffs.' \
+    'Projects, Project handoffs, shared skills, MCP settings, other machines,' \
+    'and the upstream repository itself are untouched. Git history retains the folder.' >&2
+  if confirm "retire '$MACHINE' from the caravan?"; then
+    if ! retire_machine_from_caravan "$MACHINE" 1; then
+      warn "retirement failed — uninstall stopped before removing anything"
+      return 1
+    fi
+  fi
+  return 0
+}
+
 cmd_uninstall() {
-  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead
+  local purge=0 yes=0 interactive=1 arg self install_dir state home_real p target agent ahead
   local shim_root seen_key scope seen_shims=$'\n'
   for arg in "$@"; do
     case "$arg" in
@@ -334,6 +353,7 @@ cmd_uninstall() {
       *) die "usage: satchel uninstall [--purge] [--yes]" ;;
     esac
   done
+  [ "$yes" -eq 0 ] || interactive=0
 
   self="$(readlink -f "$0")"
   installed_satchel_path "$self" \
@@ -376,6 +396,10 @@ cmd_uninstall() {
     [ "$yes" -eq 1 ] || confirm "uninstall the Satchel command and its Claude/Codex shims?" \
       || { info "cancelled"; return 0; }
   fi
+
+  # Retirement mutates the shared Sync Repo and is offered only during the
+  # human-guided flow; --yes never expands into a global caravan change.
+  [ "$interactive" -eq 0 ] || offer_uninstall_retirement || return 1
 
   remove_unraid_boot_block
 
@@ -2652,6 +2676,50 @@ cmd_settings() {
 
 # ----------------------------------------------------------------- retire
 
+rollback_retirement() { # rollback_retirement <pre-retirement-head> <machine>
+  local before="$1" target="$2"
+  git_sync reset -q --mixed "$before"
+  git_sync restore -q --source="$before" --staged --worktree -- "machines/$target"
+}
+
+retire_machine_from_caravan() { # retire_machine_from_caravan <machine> [strict]
+  local target="$1" strict="${2:-0}" before
+  ensure_sync_identity
+
+  if [ "$strict" -eq 1 ]; then
+    if [ -n "$(git_sync status --porcelain)" ]; then
+      warn "the Sync Repo has uncommitted changes — run 'satchel sync' before retiring '$target'"
+      return 1
+    fi
+    if has_upstream && ! timeout 30 git -C "$SYNC_DIR" pull --rebase -q; then
+      warn "could not update the Sync Repo — retirement was not attempted"
+      return 1
+    fi
+    [ -d "$SYNC_DIR/machines/$target" ] \
+      || { info "'$target' is already absent from the caravan"; return 0; }
+    before="$(git_sync rev-parse HEAD)"
+    if ! git_sync rm -rq -- "machines/$target" \
+      || ! git_sync commit -q -m "retire $target"; then
+      rollback_retirement "$before" "$target"
+      warn "could not commit retirement of '$target'; local Sync Repo restored"
+      return 1
+    fi
+    if ! timeout 30 git -C "$SYNC_DIR" push -q -u origin HEAD; then
+      rollback_retirement "$before" "$target"
+      warn "could not push retirement of '$target'; local Sync Repo restored"
+      return 1
+    fi
+  else
+    git_sync rm -rq -- "machines/$target"
+    git_sync commit -q -m "retire $target"
+    if has_upstream && ! git_sync pull --rebase -q; then
+      die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'satchel sync'"
+    fi
+    git_sync push -q -u origin HEAD || warn "could not push — run 'satchel sync' when the remote is reachable"
+  fi
+  info "'$target' retired from the caravan"
+}
+
 cmd_retire() {
   sync_ready || die "sync is not set up — run 'satchel init' first"
   quiet_pull
@@ -2679,15 +2747,7 @@ cmd_retire() {
   [ -d "$SYNC_DIR/machines/$target" ] || die "no machine '$target' in the caravan"
 
   confirm "retire '$target' — delete its folder from the Sync Repo? (git history keeps it)" || { info "cancelled"; return 0; }
-
-  ensure_sync_identity
-  git_sync rm -rq -- "machines/$target"
-  git_sync commit -q -m "retire $target"
-  if has_upstream && ! git_sync pull --rebase -q; then
-    die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'satchel sync'"
-  fi
-  git_sync push -q -u origin HEAD || warn "could not push — run 'satchel sync' when the remote is reachable"
-  info "'$target' retired from the caravan"
+  retire_machine_from_caravan "$target"
 
   if [ "$target" = "$MACHINE" ]; then
     warn "that was this machine — its local state ($SATCHEL_DIR) still exists: config, agent logins, the sync clone"
@@ -3003,7 +3063,8 @@ setup
   satchel unlink [claude|codex] remove the redirects (use the native CLIs directly)
   satchel uninstall             remove Satchel, its shims and image; interactively choose
                                whether to keep or purge local state (--yes keeps it;
-                               --purge --yes removes everything without prompting)
+                               --purge --yes removes everything without prompting);
+                               interactive uninstall can also retire this machine
   satchel import claude|codex  copy this host's agent login into satchel's sessions
   satchel mcp list|add|remove  manage the MCP Registry (synced to every machine);
                              bare 'add' or 'remove' walks through it interactively

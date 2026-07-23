@@ -33,7 +33,8 @@ setup
   satchel unlink [claude|codex] remove the redirects (use the native CLIs directly)
   satchel uninstall             remove Satchel, its shims and image; interactively choose
                                whether to keep or purge local state (--yes keeps it;
-                               --purge --yes removes everything without prompting)
+                               --purge --yes removes everything without prompting);
+                               interactive uninstall can also retire this machine
   satchel import claude|codex  copy this host's agent login into satchel's sessions
   satchel mcp list|add|remove  manage the MCP Registry (synced to every machine);
                              bare 'add' or 'remove' walks through it interactively
