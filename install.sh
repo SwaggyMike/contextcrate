@@ -167,7 +167,7 @@ if [ -f "$STATE_DIR/config" ]; then
   if [ -z "$SYNC_URL" ] || [ -d "$STATE_DIR/sync/.git" ]; then initialized=1; fi
 fi
 if [ "$initialized" -eq 1 ]; then
-  say "done — already initialized ('satchel status' to check the fleet)"
+  say "done — already initialized ('satchel status' to check the caravan)"
 elif { : </dev/tty; } 2>/dev/null; then
   say "starting setup…"
   "$BIN/satchel" init </dev/tty || say "setup did not finish — fix the issue above and run: satchel init"

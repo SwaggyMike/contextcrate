@@ -14,7 +14,7 @@ kept its state in ephemeral container paths: known_hosts written there
 evaporated with the container, defeating ADR 0005's trust-on-first-use
 record, and on Unraid a root Host Session tripped over the host's
 `/root/.ssh` symlink dangling inside the container. Every machine in the
-fleet hit some form of this; Apollo carried a guide of explicit
+caravan hit some form of this; Apollo carried a guide of explicit
 `-o`/`-i` workarounds.
 
 Separately, sessions could read their own machine's knowledge and every
@@ -26,20 +26,20 @@ notes"). The only reader of a machine's notes was that machine itself.
 
 - `build_image` runs `usermod -d /home/satchel node` and the same for
   `root`: every tool that consults passwd (ssh foremost) now agrees with
-  `$HOME` about where home is. This covers the whole fleet — sandboxed
+  `$HOME` about where home is. This covers the whole caravan — sandboxed
   sessions run as UID 1000, root Host Sessions as UID 0.
 - Rootless podman launches add
   `--passwd-entry '$USERNAME:*:$UID:$GID::/home/satchel:/bin/bash'` beside
   `--userns=keep-id`, so a custom `SATCHEL_UID` absent from the image's
   passwd gets the same home. Docker with a custom UID keeps today's
-  behavior (no passwd entry at all); accepted — no fleet machine does that.
+  behavior (no passwd entry at all); accepted — no caravan machine does that.
 - Host key files are still never copied or consumed automatically; auth
   stays with the forwarded agent (ADR 0005). This fix is about ssh's
   *state directory*, not its credentials.
 - `compose_run_args` mounts `$SYNC_DIR/machines` read-only at
   `/home/satchel/machines`, and the preamble points to it. Writes still go
   only through the machine's own rw `/home/satchel/machine` mount, so
-  authorship stays local while readership is fleet-wide.
+  authorship stays local while readership is caravan-wide.
 
 ## Consequences
 

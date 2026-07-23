@@ -17,7 +17,7 @@ A single run of an agent CLI inside a throwaway Docker container, scoped to one 
 _Avoid_: workspace, environment
 
 **Project**:
-A directory the user explicitly chose to track. Project identity and handoffs are global across the fleet; each machine keeps only its local path mapping. A Git remote links checkouts automatically when present, but Git is not required.
+A directory the user explicitly chose to track. Project identity and handoffs are global across the caravan; each machine keeps only its local path mapping. A Git remote links checkouts automatically when present, but Git is not required.
 _Avoid_: every working directory, repository (not every repository is tracked)
 
 **Sync Repo**:

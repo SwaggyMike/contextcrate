@@ -20,7 +20,7 @@ sandbox is the primary workplace. Alternatives considered:
   that a session could exfiltrate, plus per-repo setup. Strictly worse than a
   socket that expires with the session.
 - **Host-side push broker** — most contained, most machinery. Not worth it
-  for a single-user fleet.
+  for a single-user caravan.
 
 ## Decision
 

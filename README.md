@@ -115,12 +115,12 @@ judgment.)
 | `satchel --host claude` | Host Session: sandbox off, host `/` at `/host` — for fixing the machine itself |
 | `satchel init` | name this machine, connect the Sync Repo |
 | `satchel sync` | commit, pull, push the Sync Repo |
-| `satchel status` | fleet roster, handoffs, MCP servers, skills |
+| `satchel status` | caravan roster, handoffs, MCP servers, skills |
 | `satchel key` | show this machine's SSH public key (generates one if needed) |
-| `satchel retire [machine]` | remove a machine from the fleet — interactive picker without a name |
+| `satchel retire [machine]` | remove a machine from the caravan — interactive picker without a name |
 | `satchel import claude\|codex` | copy the host's agent login into satchel's sessions |
 | `satchel mcp add\|list\|remove` | manage the MCP Registry (configured once, wired into every session) |
-| `satchel settings` | show every setting and its value; `satchel settings <KEY> <value>` sets it fleet-wide, `--local` for one machine |
+| `satchel settings` | show every setting and its value; `satchel settings <KEY> <value>` sets it caravan-wide, `--local` for one machine |
 | `satchel doctor` | check this machine's setup end to end — engine, image, key, sync, MCP endpoints |
 | `satchel update` | self-update from `main` (lists the commits it pulls in) and rebuild the agent image |
 

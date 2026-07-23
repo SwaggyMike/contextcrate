@@ -181,7 +181,7 @@ cmd_unlink() {
 
 # The settings catalog — single source of truth for 'satchel settings', the
 # config template, and what the setter accepts. Fields: KEY|scope|default|help.
-# 'pref' settings sync fleet-wide via settings.env in the Sync Repo; 'machine'
+# 'pref' settings sync caravan-wide via settings.env in the Sync Repo; 'machine'
 # settings describe this box and stay in the local config.
 SETTINGS_SPEC=(
   "SATCHEL_HANDOFF_MODEL_CLAUDE|pref|haiku|model that writes handoffs: haiku, sonnet, opus, fable, or a full model name; '' = the agent's default"
@@ -573,7 +573,7 @@ cmd_mcp() {
         prompt_token "$name"
       fi
       quiet_push "mcp: add $name"
-      info "registered '$name' for the whole fleet"
+      info "registered '$name' for the whole caravan"
       report_mcp_probe "$name" "$url" "$(probe_mcp "$url")" info warn
       ;;
     remove)
@@ -1085,7 +1085,7 @@ sync_machine_registration() { # sync_machine_registration <machine-name>
   # This remains the write-access check: a read-only deploy key fails here,
   # after remote history is known to be integrated.
   if git_sync push -u origin HEAD; then
-    success "machine '$name' joined the fleet"
+    success "machine '$name' joined the caravan"
   else
     warn "Sync Repo push failed — the remote may be read-only or temporarily unreachable"
     warn "fix access or connectivity, then run 'satchel sync'"
@@ -1898,7 +1898,7 @@ cmd_settings() {
       printf '%-28s %-22s %-8s %s\n' "$k" "${val:-''}" "$src" "$help ${scope:+[$scope]}"
     done
     printf "\nchange one:  satchel settings <SETTING> <value>\n"
-    printf "             preference settings apply to the whole fleet; add --local to pin\n"
+    printf "             preference settings apply to the whole caravan; add --local to pin\n"
     printf "             just this machine, or set '' as the value to clear one\n"
     return 0
   fi
@@ -1919,7 +1919,7 @@ cmd_settings() {
     else
       write_setting "$SYNC_SETTINGS_FILE" "$key" "$value"
       quiet_push "settings: $key on $MACHINE"
-      info "'$key' set for the whole fleet"
+      info "'$key' set for the whole caravan"
     fi
   else
     write_setting "$CONFIG_FILE" "$key" "$value"
@@ -1939,8 +1939,8 @@ cmd_retire() {
       [ -d "$m" ] || continue
       names+=("$(basename "$m")")
     done
-    [ "${#names[@]}" -gt 0 ] || die "the fleet is empty — nothing to retire"
-    info "fleet:"
+    [ "${#names[@]}" -gt 0 ] || die "the caravan is empty — nothing to retire"
+    info "caravan:"
     for i in "${!names[@]}"; do
       marker=""
       [ "${names[$i]}" = "$MACHINE" ] && marker=" (this machine)"
@@ -1953,7 +1953,7 @@ cmd_retire() {
       || die "not a valid choice: $choice"
     target="${names[$((choice - 1))]}"
   fi
-  [ -d "$SYNC_DIR/machines/$target" ] || die "no machine '$target' in the fleet"
+  [ -d "$SYNC_DIR/machines/$target" ] || die "no machine '$target' in the caravan"
 
   confirm "retire '$target' — delete its folder from the Sync Repo? (git history keeps it)" || { info "cancelled"; return 0; }
 
@@ -1964,7 +1964,7 @@ cmd_retire() {
     die "pull hit a conflict — resolve it in $SYNC_DIR with normal git, then 'satchel sync'"
   fi
   git_sync push -q -u origin HEAD || warn "could not push — run 'satchel sync' when the remote is reachable"
-  info "'$target' retired from the fleet"
+  info "'$target' retired from the caravan"
 
   if [ "$target" = "$MACHINE" ]; then
     warn "that was this machine — its local state ($SATCHEL_DIR) still exists: config, agent logins, the sync clone"
@@ -2009,7 +2009,7 @@ cmd_status() {
     else
       printf '  machine baseline: version %s\n' "$bv"
     fi
-    printf '\n'; out_section 'Fleet:'
+    printf '\n'; out_section 'Caravan:'
     local m mh f
     for m in "$SYNC_DIR"/machines/*/; do
       [ -d "$m" ] || continue
@@ -2105,7 +2105,7 @@ cmd_doctor() {
   done
 
   if [ -z "$SYNC_URL" ]; then
-    d_warn "sync not configured — 'satchel init' to join a fleet"
+    d_warn "sync not configured — 'satchel init' to join a caravan"
   elif ! sync_ready; then
     d_fail "SYNC_URL is set but there is no clone at $SYNC_DIR — rerun 'satchel init'"
   else
@@ -2238,12 +2238,12 @@ sessions
   satchel track [name]         track the current directory as a project
   satchel untrack              stop tracking the current directory on this machine
 
-fleet
+caravan
   satchel init                 name this machine, connect the Sync Repo
   satchel sync                 commit, pull, push the Sync Repo
-  satchel status               fleet roster, handoffs, MCP servers, skills
+  satchel status               caravan roster, handoffs, MCP servers, skills
   satchel key                  show this machine's SSH public key (makes one if needed)
-  satchel retire [machine]     remove a machine from the fleet (picks from a list)
+  satchel retire [machine]     remove a machine from the caravan (picks from a list)
   satchel doctor               check this machine's whole setup and say what's wrong
 
 setup
@@ -2253,7 +2253,7 @@ setup
   satchel mcp list|add|remove  manage the MCP Registry (synced to every machine);
                              bare 'add' or 'remove' walks through it interactively
   satchel settings             show every setting; 'satchel settings <KEY> <value>'
-                             sets it fleet-wide (--local: this machine only)
+                             sets it caravan-wide (--local: this machine only)
 
   satchel update               self-update from git main + rebuild the image
   satchel version

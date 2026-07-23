@@ -1,6 +1,6 @@
 # One shared skill library, mounted into both agents
 
-Supersedes [ADR 0003](0003-skills-as-mounted-per-agent-libraries.md): the Sync Repo now carries a single `skills/shared/` folder, and satchel mounts it into every session as that agent's native skills directory — `~/.claude/skills` for Claude, `~/.codex/skills` for Codex. Installing a skill once, from any session on any machine, makes it available to both agents fleet-wide after a sync.
+Supersedes [ADR 0003](0003-skills-as-mounted-per-agent-libraries.md): the Sync Repo now carries a single `skills/shared/` folder, and satchel mounts it into every session as that agent's native skills directory — `~/.claude/skills` for Claude, `~/.codex/skills` for Codex. Installing a skill once, from any session on any machine, makes it available to both agents caravan-wide after a sync.
 
 ## Why revisit 0003
 
