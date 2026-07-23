@@ -135,7 +135,7 @@ shim_status() { # shim_status <agent> → prints "linked <path>" or "not linked"
 cmd_link() {
   local agents=("$@")
   [ "${#agents[@]}" -eq 0 ] && agents=(claude codex)
-  local bin self agent shim
+  local bin self agent shim linked=0
   bin="$(shim_dir)"
   self="$(readlink -f "$0")"
   mkdir -p "$bin"
@@ -152,7 +152,11 @@ cmd_link() {
     printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$self" "$agent" > "$shim"
     chmod 755 "$shim"
     info "linked '$agent' → $shim"
+    linked=1
   done
+  if [ "$linked" -eq 1 ]; then
+    info "if a linked command still resolves to an old path, run 'hash -r' or open a new shell"
+  fi
 }
 
 cmd_unlink() {
@@ -954,10 +958,10 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
       roster+="- ${vis_ids[$k]}: $(session_path "${vis_paths[$k]}")"$'\n'
     done
     prompt="The session is ending. These tracked projects were visible in this session:
-${roster}Write a handoff note for each project you actually worked in during this conversation, so the next session on that project can continue where we left off. If you also did meaningful work outside every listed project, add one note for the machine itself. Start each note with a line of exactly '=== project: <id> ===' (or '=== machine ===' for the machine note), followed by the sections ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines per note. Skip anything you did not work in. Output only the markdown, no preamble."
+${roster}Write a handoff note for each project you actually worked in during this conversation, so the next session on that project can continue where we left off. If you also did meaningful work outside every listed project, add one note for the machine itself. Start each note with a line of exactly '=== project: <id> ===' (or '=== machine ===' for the machine note), followed by the sections ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines per note. Skip anything you did not work in. If you did no meaningful work in any listed project or on the machine, output exactly NO_HANDOFF and nothing else. Output only the markdown, no preamble."
   else
     scope=machine; [ -n "$slug" ] && scope=project
-    prompt="The session is ending. Based on this conversation, write a handoff note so the next session on this $scope can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. Output only the markdown, no preamble."
+    prompt="The session is ending. Based on this conversation, write a handoff note so the next session on this $scope can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. If you did no meaningful work to hand off, output exactly NO_HANDOFF and nothing else. Output only the markdown, no preamble."
   fi
   # A handoff is a summary chore in a fixed format — the small fast model is
   # plenty and halves the wait at session end. Override per agent via
@@ -965,18 +969,20 @@ ${roster}Write a handoff note for each project you actually worked in during thi
   local base_cmd model setting
   case "$agent" in
     claude)
-      base_cmd=(claude --continue -p "$prompt")
+      base_cmd=(claude --continue --effort low -p "$prompt")
       model="${SATCHEL_HANDOFF_MODEL_CLAUDE-haiku}"; setting=SATCHEL_HANDOFF_MODEL_CLAUDE ;;
     codex)
       # --skip-git-repo-check: codex exec hard-fails in a non-git project dir
       # (interactive codex remembers trust; exec does not).
-      base_cmd=(codex exec resume --last --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' "$prompt")
+      # Codex has no rolling cheap-model alias (any pinned name would rot),
+      # so the speed lever is reasoning effort on the default model instead.
+      base_cmd=(codex exec resume --last --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' -c 'model_reasoning_effort="low"' "$prompt")
       model="${SATCHEL_HANDOFF_MODEL_CODEX-}"; setting=SATCHEL_HANDOFF_MODEL_CODEX ;;
   esac
   local cmd=("${base_cmd[@]}")
   case "$agent:$model" in
-    claude:?*) cmd=(claude --continue --model "$model" -p "$prompt") ;;
-    codex:?*)  cmd=(codex exec resume --last --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' -m "$model" "$prompt") ;;
+    claude:?*) cmd=(claude --continue --model "$model" --effort low -p "$prompt") ;;
+    codex:?*)  cmd=(codex exec resume --last --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' -c 'model_reasoning_effort="low"' -m "$model" "$prompt") ;;
   esac
 
   # The handoff writer never needs host powers: recompose the run args
@@ -1001,6 +1007,14 @@ ${roster}Write a handoff note for each project you actually worked in during thi
     warn "handoff skipped — previous handoff kept"
     return 0
   fi
+  # NO_HANDOFF is the agent saying "nothing worth handing off" (a Q&A-only
+  # session) — a valid outcome, not a model failure. Without this, an empty
+  # session trips the fallback below and pays for a pointless second model.
+  if printf '%s' "$body" | grep -q '^NO_HANDOFF'; then
+    rm -f "$errf"
+    info "no work to hand off — previous handoff kept"
+    return 0
+  fi
   # The prompt mandates a "## Goal" section; anything without one is an agent
   # error message ("Not logged in", model not found, usage text), not a handoff.
   if ! printf '%s' "$body" | grep -q '^## Goal'; then
@@ -1017,6 +1031,11 @@ ${roster}Write a handoff note for each project you actually worked in during thi
         warn "handoff skipped — previous handoff kept"
         return 0
       fi
+    fi
+    if printf '%s' "$body" | grep -q '^NO_HANDOFF'; then
+      rm -f "$errf"
+      info "no work to hand off — previous handoff kept"
+      return 0
     fi
     if ! printf '%s' "$body" | grep -q '^## Goal'; then
       warn "handoff generation failed — keeping the previous handoff"
