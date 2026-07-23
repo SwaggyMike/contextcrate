@@ -88,6 +88,11 @@ asks for a persistent directory instead (default
 curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh | SATCHEL_BIN=/mnt/user/appdata/satchel bash
 ```
 
+`SATCHEL_BIN` names the self-contained install directory, not the executable
+file. On an ordinary machine omit it; do not use a command path such as
+`~/.local/bin/satchel`, because that creates a directory where the shell
+expects the `satchel` executable.
+
 Either way that puts the script, the `claude`/`codex` shims, and all state (a sibling
 `.satchel/` directory — config, sync clone, agent logins) in that one
 directory, and satchel finds its state next to itself.

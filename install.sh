@@ -12,6 +12,14 @@ RAW="https://raw.githubusercontent.com/SwaggyMike/satchel"
 say() { printf 'install: %s\n' "$*" >&2; }
 die() { printf 'install: error: %s\n' "$*" >&2; exit 1; }
 
+# Both current marked shims and the original `exec satchel <agent>` wrappers
+# belong to Satchel. Keep this predicate aligned with the installed command.
+is_satchel_shim() {
+  [ -f "$1" ] || return 1
+  grep -qs '^# satchel shim$' "$1" \
+    || grep -qsE '^exec[[:space:]]+satchel[[:space:]]+(claude|codex)([[:space:]]|$)' "$1"
+}
+
 # Unraid-only messages get their own prefix: they concern the flash-backed
 # boot config, not the normal install flow, and should read as such.
 usay() { printf 'install (unraid): %s\n' "$*" >&2; }
@@ -46,6 +54,21 @@ if [ -z "${SATCHEL_BIN:-}" ] && [ -f /etc/unraid-version ]; then
     || die "parent of $SATCHEL_BIN does not exist — is the array started?"
 fi
 if [ -n "${SATCHEL_BIN:-}" ]; then
+  # SATCHEL_BIN names a directory. Putting a directory named "satchel" inside
+  # a PATH entry makes shells resolve that directory as the satchel command.
+  candidate="${SATCHEL_BIN%/}"
+  if [ "${candidate##*/}" = satchel ]; then
+    candidate_parent="${candidate%/*}"
+    [ "$candidate_parent" != "$candidate" ] || candidate_parent=.
+    old_ifs="$IFS"; IFS=:
+    for path_dir in $PATH; do
+      if [ "${path_dir%/}" = "${candidate_parent%/}" ]; then
+        IFS="$old_ifs"
+        die "SATCHEL_BIN names a directory, but $candidate occupies the 'satchel' command path. Omit SATCHEL_BIN for a normal install, or choose a self-contained directory outside PATH (for example, \$HOME/.local/share/satchel)."
+      fi
+    done
+    IFS="$old_ifs"
+  fi
   BIN="$SATCHEL_BIN"; mkdir -p "$BIN"
   STATE_DIR="${SATCHEL_DIR:-$BIN/.satchel}"
   mkdir -p "$STATE_DIR"  # existing sibling dir is what turns detection on
@@ -98,7 +121,7 @@ if [ "$install_shims" = y ]; then
     shim="$BIN/$agent"
     # -e is false for dangling symlinks. Treat -L as existing too, otherwise
     # redirecting into one follows its missing target and aborts the installer.
-    if { [ -e "$shim" ] || [ -L "$shim" ]; } && ! grep -q "satchel shim\|exec satchel" "$shim" 2>/dev/null; then
+    if { [ -e "$shim" ] || [ -L "$shim" ]; } && ! is_satchel_shim "$shim"; then
       say "SKIPPED shim '$agent': $shim exists and is not a satchel shim."
       say "  remove it (or the host CLI it points to) and rerun to route '$agent' through satchel."
       continue

@@ -54,6 +54,23 @@ done
 
 printf 'ok: SATCHEL_BIN install is self-contained\n'
 
+# SATCHEL_BIN is a directory, so a value occupying PATH's `satchel` command
+# slot must be rejected before it creates the crate-test collision.
+collision_home="$test_home/collision-home"
+collision_bin="$collision_home/.local/bin"
+mkdir -p "$collision_bin"
+set +e
+output="$(HOME="$collision_home" PATH="$collision_bin:$PATH" \
+  SATCHEL_BIN="$collision_bin/satchel" bash "$repo_dir/install.sh" </dev/null 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "installer accepted a SATCHEL_BIN directory in the satchel command slot" "$output"
+[ ! -e "$collision_bin/satchel" ] || fail "installer created the colliding satchel directory" "$output"
+grep -q "names a directory" <<< "$output" \
+  || fail "SATCHEL_BIN collision error did not explain the directory semantics" "$output"
+
+printf 'ok: installer rejects SATCHEL_BIN command-path collisions\n'
+
 # --- satchel finds sibling state without env or \$HOME ----------------------
 
 printf 'MACHINE=sibling-detected\nSYNC_URL=\n' > "$bin/.satchel/config"
@@ -196,6 +213,35 @@ grep -q 'removed container image' <<< "$output" \
   || fail "satchel uninstall did not remove its container image" "$output"
 
 printf 'ok: satchel uninstall preserves local state\n'
+
+# Legacy shims used `exec satchel <agent>` without the marker and could live
+# one directory above a self-contained install. Uninstall must remove those
+# exact wrappers while preserving unrelated native executables.
+legacy_home="$test_home/legacy-home"
+legacy_path="$legacy_home/.local/bin"
+legacy_install="$legacy_path/satchel"
+mkdir -p "$legacy_install/.satchel"
+cp "$repo_dir/satchel" "$legacy_install/satchel"
+chmod 755 "$legacy_install/satchel"
+printf 'MACHINE=legacy-uninstall\nSYNC_URL=\n' > "$legacy_install/.satchel/config"
+printf '%s\n' "$legacy_install/satchel" > "$legacy_install/.satchel/install-path"
+printf '#!/usr/bin/env bash\nexec satchel codex "$@"\n' > "$legacy_path/codex"
+printf '#!/usr/bin/env bash\necho native claude\n' > "$legacy_path/claude"
+chmod 755 "$legacy_path/codex" "$legacy_path/claude"
+
+set +e
+output="$(HOME="$legacy_home" "$legacy_install/satchel" uninstall --yes 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "legacy-layout uninstall failed (rc=$rc)" "$output"
+[ ! -e "$legacy_path/codex" ] || fail "uninstall left the legacy codex shim behind" "$output"
+[ -x "$legacy_path/claude" ] || fail "uninstall removed an unrelated native claude executable" "$output"
+[ ! -e "$legacy_install/satchel" ] || fail "legacy-layout uninstall left its command behind" "$output"
+[ -d "$legacy_install/.satchel" ] || fail "legacy-layout uninstall did not preserve state" "$output"
+grep -q "removed shim $legacy_path/codex" <<< "$output" \
+  || fail "legacy shim cleanup was not reported" "$output"
+
+printf 'ok: satchel uninstall removes legacy shims across known command paths\n'
 
 # A plain uninstall remains confirmation-gated.
 cancel_bin="$test_home/uninstall-cancel"

@@ -122,8 +122,14 @@ shim_dir() {
   fi
 }
 
-# Is the file at $1 a satchel shim?
-is_satchel_shim() { [ -f "$1" ] && grep -q "satchel shim" "$1" 2>/dev/null; }
+# Both current marked shims and the original `exec satchel <agent>` wrappers
+# belong to Satchel. Match the legacy form narrowly so unrelated executables
+# that merely mention Satchel are never removed.
+is_satchel_shim() {
+  [ -f "$1" ] || return 1
+  grep -qs '^# satchel shim$' "$1" \
+    || grep -qsE '^exec[[:space:]]+satchel[[:space:]]+(claude|codex)([[:space:]]|$)' "$1"
+}
 
 shim_status() { # shim_status <agent> → prints "linked <path>" or "not linked"
   local bin agent="$1" shim
@@ -259,7 +265,7 @@ remove_satchel_image() {
 }
 
 cmd_uninstall() {
-  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead
+  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead shim_root
   for arg in "$@"; do
     case "$arg" in
       --purge) purge=1 ;;
@@ -303,27 +309,27 @@ cmd_uninstall() {
 
   remove_unraid_boot_block
 
-  # Unraid may have restored PATH symlinks into /usr/local/bin. Remove only
-  # links resolving back into this installation. Do this before their targets
-  # so readlink can still prove ownership.
-  for p in /usr/local/bin/satchel /usr/local/bin/claude /usr/local/bin/codex; do
+  # Unraid may have restored the command symlink into /usr/local/bin. Remove
+  # only a link resolving back into this exact installation.
+  for p in /usr/local/bin/satchel "$HOME/.local/bin/satchel"; do
     [ -L "$p" ] || continue
     target="$(readlink -f "$p" 2>/dev/null || true)"
-    case "$target" in
-      "$self"|"$install_dir/claude"|"$install_dir/codex")
-        remove_file_for_uninstall "$p"
-        info "removed link $p"
-        ;;
-    esac
+    [ "$target" = "$self" ] || continue
+    remove_file_for_uninstall "$p"
+    info "removed link $p"
   done
 
-  # Remove only wrappers installed beside this exact Satchel script.
-  for agent in claude codex; do
-    p="$install_dir/$agent"
-    if is_satchel_shim "$p"; then
-      remove_file_for_uninstall "$p"
-      info "removed shim $p"
-    fi
+  # Sweep known command locations before the installation directory: symlinked
+  # wrappers must still have live targets when is_satchel_shim inspects them.
+  # The predicate accepts only current marked shims and exact legacy wrappers.
+  for shim_root in /usr/local/bin "$HOME/.local/bin" "$(shim_dir)" "$install_dir"; do
+    for agent in claude codex; do
+      p="$shim_root/$agent"
+      if is_satchel_shim "$p"; then
+        remove_file_for_uninstall "$p"
+        info "removed shim $p"
+      fi
+    done
   done
 
   remove_satchel_image
