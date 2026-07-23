@@ -56,6 +56,7 @@ printf '<!-- satchel-handoff project=- machine=testbox date=2026-02-05T00:00:00Z
 # Machine Notes: mounted into sessions, injected into the preamble, and the
 # standing instruction is present even before any notes exist.
 compose_run_args claude "$tmp/home_c" "$tmp/work/app"
+[[ " ${RUN_ARGS[*]} " == *"--label io.github.swaggymike.satchel.managed=true"* ]]
 [[ " ${RUN_ARGS[*]} " == *"/machines/testbox:/home/satchel/machine"* ]]
 write_memory_file claude "$tmp/home_c" "" "$tmp/work/app" 2>/dev/null
 grep -q '/home/satchel/machine/notes.md' "$tmp/home_c/.claude/CLAUDE.md"

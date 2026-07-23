@@ -44,7 +44,8 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   skills_dir="$(session_skills_dir "$agent")"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
   # throwaway container can only fail or evaporate — 'satchel update' is the way.
-  RUN_ARGS=(-e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1 -e SATCHEL_SESSION=1)
+  RUN_ARGS=(--label "$MANAGED_CONTAINER_LABEL" -e HOME=/home/satchel
+    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1 -e SATCHEL_SESSION=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
   # Machine Notes: durable facts about this machine, curated by agents
   # mid-session (same mechanism as the Skill Library - rw mount, synced by
@@ -120,7 +121,8 @@ fix_home_ownership() { # fix_home_ownership <path> [quiet]
   [ "$count" -gt 0 ] || return 0
   local label=()
   if selinux_active; then label=(--security-opt label=disable); fi
-  if "$(engine)" run --rm --user 0:0 "${label[@]}" -v "$1:/reclaim" "$IMAGE" \
+  if "$(engine)" run --rm --label "$MANAGED_CONTAINER_LABEL" --user 0:0 \
+      "${label[@]}" -v "$1:/reclaim" "$IMAGE" \
       chown -R "$SATCHEL_UID:$SATCHEL_GID" /reclaim; then
     [ "$quiet" -eq 1 ] || info "restored ownership of $count items in $1 to $SATCHEL_UID:$SATCHEL_GID"
   else

@@ -107,7 +107,8 @@ baseline_secret_scan_tree() { # baseline_secret_scan_tree <old-dir> <new-dir>
 
 compose_baseline_run_args() { # compose_baseline_run_args <agent> <home>
   local agent="$1" home="$2"
-  RUN_ARGS=(--init -e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
+  RUN_ARGS=(--init --label "$MANAGED_CONTAINER_LABEL" -e HOME=/home/satchel
+    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
   if [ "$agent" = codex ]; then compose_codex_mcp_env; fi
   compose_clipboard_args

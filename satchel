@@ -28,6 +28,7 @@ SCRIPT_SHA_FILE="$SATCHEL_DIR/script-sha"
 INSTALL_PATH_FILE="$SATCHEL_DIR/install-path"
 SKILL_QUARANTINE_DIR="$SATCHEL_DIR/quarantine/skills"
 IMAGE="localhost/satchel:latest"
+MANAGED_CONTAINER_LABEL="io.github.swaggymike.satchel.managed=true"
 
 # Set by load_config / flags.
 MACHINE=""
@@ -289,7 +290,7 @@ remove_unraid_boot_block() {
 }
 
 remove_satchel_image() {
-  local e=""
+  local e="" id state output
   if [ -n "${SATCHEL_ENGINE:-}" ] && command -v "$SATCHEL_ENGINE" >/dev/null 2>&1; then
     e="$SATCHEL_ENGINE"
   elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -299,10 +300,39 @@ remove_satchel_image() {
   fi
   [ -n "$e" ] || return 0
   "$e" image inspect "$IMAGE" >/dev/null 2>&1 || return 0
-  if "$e" image rm "$IMAGE" >/dev/null 2>&1; then
+
+  # --rm normally handles session cleanup. If the engine was interrupted,
+  # remove only stopped containers carrying Satchel's ownership label. Active
+  # sessions and legacy/unrecognized containers are preserved deliberately.
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    state="$("$e" inspect --format '{{.State.Status}}' "$id" 2>/dev/null || true)"
+    case "$state" in
+      exited|created|configured|initialized|dead|stopped)
+        if output="$("$e" container rm "$id" 2>&1)"; then
+          info "removed stopped Satchel container $id"
+        else
+          warn "could not remove stopped Satchel container $id: ${output:-unknown engine error}"
+        fi
+        ;;
+      running|paused|restarting)
+        warn "left active Satchel container $id untouched"
+        ;;
+      *)
+        warn "left Satchel container $id untouched because its state could not be verified"
+        ;;
+    esac
+  done < <("$e" ps -a --filter "label=$MANAGED_CONTAINER_LABEL" --format '{{.ID}}' 2>/dev/null || true)
+
+  if output="$("$e" image rm "$IMAGE" 2>&1)"; then
     info "removed container image $IMAGE"
   else
-    warn "could not remove container image $IMAGE; remove it later with '$e image rm $IMAGE'"
+    warn "could not remove container image $IMAGE: ${output:-unknown engine error}"
+    if [ "$e" = podman ]; then
+      warn "inspect blockers with '$e ps -a --external --filter ancestor=$IMAGE'"
+    else
+      warn "inspect blockers with '$e ps -a --filter ancestor=$IMAGE'"
+    fi
   fi
 }
 
@@ -2022,7 +2052,8 @@ baseline_secret_scan_tree() { # baseline_secret_scan_tree <old-dir> <new-dir>
 
 compose_baseline_run_args() { # compose_baseline_run_args <agent> <home>
   local agent="$1" home="$2"
-  RUN_ARGS=(--init -e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
+  RUN_ARGS=(--init --label "$MANAGED_CONTAINER_LABEL" -e HOME=/home/satchel
+    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
   if [ "$agent" = codex ]; then compose_codex_mcp_env; fi
   compose_clipboard_args
@@ -2183,7 +2214,8 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   skills_dir="$(session_skills_dir "$agent")"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
   # throwaway container can only fail or evaporate — 'satchel update' is the way.
-  RUN_ARGS=(-e HOME=/home/satchel -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1 -e SATCHEL_SESSION=1)
+  RUN_ARGS=(--label "$MANAGED_CONTAINER_LABEL" -e HOME=/home/satchel
+    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1 -e SATCHEL_SESSION=1)
   RUN_ARGS+=(-v "$home:/home/satchel")
   # Machine Notes: durable facts about this machine, curated by agents
   # mid-session (same mechanism as the Skill Library - rw mount, synced by
@@ -2259,7 +2291,8 @@ fix_home_ownership() { # fix_home_ownership <path> [quiet]
   [ "$count" -gt 0 ] || return 0
   local label=()
   if selinux_active; then label=(--security-opt label=disable); fi
-  if "$(engine)" run --rm --user 0:0 "${label[@]}" -v "$1:/reclaim" "$IMAGE" \
+  if "$(engine)" run --rm --label "$MANAGED_CONTAINER_LABEL" --user 0:0 \
+      "${label[@]}" -v "$1:/reclaim" "$IMAGE" \
       chown -R "$SATCHEL_UID:$SATCHEL_GID" /reclaim; then
     [ "$quiet" -eq 1 ] || info "restored ownership of $count items in $1 to $SATCHEL_UID:$SATCHEL_GID"
   else
@@ -3024,7 +3057,7 @@ cmd_update() {
 }
 
 image_agent_versions() { # prints "claude X, codex Y" or nothing
-  "$(engine)" run --rm "$IMAGE" sh -c \
+  "$(engine)" run --rm --label "$MANAGED_CONTAINER_LABEL" "$IMAGE" sh -c \
     'printf "claude %s, codex %s" "$(claude --version 2>/dev/null | cut -d" " -f1)" "$(codex --version 2>/dev/null | cut -d" " -f2)"' \
     2>/dev/null || true
 }

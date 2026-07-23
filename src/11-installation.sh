@@ -173,7 +173,7 @@ remove_unraid_boot_block() {
 }
 
 remove_satchel_image() {
-  local e=""
+  local e="" id state output
   if [ -n "${SATCHEL_ENGINE:-}" ] && command -v "$SATCHEL_ENGINE" >/dev/null 2>&1; then
     e="$SATCHEL_ENGINE"
   elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -183,10 +183,39 @@ remove_satchel_image() {
   fi
   [ -n "$e" ] || return 0
   "$e" image inspect "$IMAGE" >/dev/null 2>&1 || return 0
-  if "$e" image rm "$IMAGE" >/dev/null 2>&1; then
+
+  # --rm normally handles session cleanup. If the engine was interrupted,
+  # remove only stopped containers carrying Satchel's ownership label. Active
+  # sessions and legacy/unrecognized containers are preserved deliberately.
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    state="$("$e" inspect --format '{{.State.Status}}' "$id" 2>/dev/null || true)"
+    case "$state" in
+      exited|created|configured|initialized|dead|stopped)
+        if output="$("$e" container rm "$id" 2>&1)"; then
+          info "removed stopped Satchel container $id"
+        else
+          warn "could not remove stopped Satchel container $id: ${output:-unknown engine error}"
+        fi
+        ;;
+      running|paused|restarting)
+        warn "left active Satchel container $id untouched"
+        ;;
+      *)
+        warn "left Satchel container $id untouched because its state could not be verified"
+        ;;
+    esac
+  done < <("$e" ps -a --filter "label=$MANAGED_CONTAINER_LABEL" --format '{{.ID}}' 2>/dev/null || true)
+
+  if output="$("$e" image rm "$IMAGE" 2>&1)"; then
     info "removed container image $IMAGE"
   else
-    warn "could not remove container image $IMAGE; remove it later with '$e image rm $IMAGE'"
+    warn "could not remove container image $IMAGE: ${output:-unknown engine error}"
+    if [ "$e" = podman ]; then
+      warn "inspect blockers with '$e ps -a --external --filter ancestor=$IMAGE'"
+    else
+      warn "inspect blockers with '$e ps -a --filter ancestor=$IMAGE'"
+    fi
   fi
 }
 

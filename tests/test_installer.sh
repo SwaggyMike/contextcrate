@@ -33,9 +33,23 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'if [ -n "${SATCHEL_TEST_ENGINE_LOG:-}" ]; then' \
   '  printf "%s\n" "$*" >> "$SATCHEL_TEST_ENGINE_LOG"' \
+  '  if [ "${1:-}" = ps ] && [ -n "${SATCHEL_TEST_CONTAINER_IDS:-}" ]; then' \
+  '    printf "%s\n" "$SATCHEL_TEST_CONTAINER_IDS"; exit 0' \
+  '  fi' \
+  '  if [ "${1:-}" = inspect ] && [ "${2:-}" = --format ]; then' \
+  '    id="${!#}"' \
+  '    if [ "$id" = "${SATCHEL_TEST_STOPPED_CONTAINER:-}" ]; then printf "exited\n"; exit 0; fi' \
+  '    if [ "$id" = "${SATCHEL_TEST_RUNNING_CONTAINER:-}" ]; then printf "running\n"; exit 0; fi' \
+  '    exit 1' \
+  '  fi' \
+  '  if [ "${1:-} ${2:-}" = "container rm" ]; then exit 0; fi' \
   '  case "${1:-} ${2:-}" in' \
   '    "image inspect") [ -f "$SATCHEL_TEST_IMAGE_STATE" ]; exit ;;' \
-  '    "image rm") rm -f "$SATCHEL_TEST_IMAGE_STATE"; exit 0 ;;' \
+  '    "image rm")' \
+  '      if [ "${SATCHEL_TEST_IMAGE_RM_FAIL:-0}" = 1 ]; then' \
+  '        printf "%s\n" "${SATCHEL_TEST_IMAGE_RM_ERROR:-image removal failed}" >&2; exit 1' \
+  '      fi' \
+  '      rm -f "$SATCHEL_TEST_IMAGE_STATE"; exit 0 ;;' \
   '  esac' \
   '  if [ "${1:-}" = build ]; then' \
   '    [ "${SATCHEL_TEST_BUILD_FAIL:-0}" != 1 ] || exit 42' \
@@ -308,6 +322,51 @@ grep -q 'removed container image' <<< "$output" \
   || fail "satchel uninstall did not remove its container image" "$output"
 
 printf 'ok: satchel uninstall preserves local state\n'
+
+# A stale stopped container that Satchel can prove it owns is removed before
+# the image. Active containers are preserved, and the engine's actual image
+# removal error reaches the user instead of being discarded.
+container_bin="$test_home/uninstall-containers"
+container_log="$test_home/uninstall-containers.log"
+container_marker="$test_home/uninstall-containers.marker"
+stopped_container=stopped-satchel
+running_container=running-satchel
+mkdir -p "$container_bin/.satchel"
+cp "$repo_dir/satchel" "$container_bin/satchel"
+chmod 755 "$container_bin/satchel"
+printf 'MACHINE=uninstall-containers\nSYNC_URL=\n' > "$container_bin/.satchel/config"
+printf '%s\n' "$container_bin/satchel" > "$container_bin/.satchel/install-path"
+touch "$container_marker"
+
+set +e
+output="$(HOME="$test_home" \
+  SATCHEL_TEST_ENGINE_LOG="$container_log" SATCHEL_TEST_IMAGE_STATE="$container_marker" \
+  SATCHEL_TEST_CONTAINER_IDS="$stopped_container
+$running_container" \
+  SATCHEL_TEST_STOPPED_CONTAINER="$stopped_container" \
+  SATCHEL_TEST_RUNNING_CONTAINER="$running_container" \
+  SATCHEL_TEST_IMAGE_RM_FAIL=1 \
+  SATCHEL_TEST_IMAGE_RM_ERROR="image used by legacy-container" \
+  "$container_bin/satchel" uninstall --yes 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "uninstall failed while handling image blockers (rc=$rc)" "$output"
+grep -Fq "ps -a --filter label=io.github.swaggymike.satchel.managed=true" "$container_log" \
+  || fail "uninstall did not discover labeled Satchel containers" "$(cat "$container_log")"
+grep -Fq "container rm $stopped_container" "$container_log" \
+  || fail "uninstall did not remove a stopped Satchel container" "$(cat "$container_log")"
+! grep -Fq "container rm $running_container" "$container_log" \
+  || fail "uninstall removed an active Satchel container" "$(cat "$container_log")"
+grep -q "left active Satchel container $running_container untouched" <<< "$output" \
+  || fail "uninstall did not report the preserved active container" "$output"
+grep -q "image used by legacy-container" <<< "$output" \
+  || fail "uninstall hid the container engine's image-removal error" "$output"
+grep -q "docker ps -a --filter ancestor=localhost/satchel:latest" <<< "$output" \
+  || fail "uninstall did not provide a Docker-compatible blocker inspection command" "$output"
+! grep -q "docker ps -a --external" <<< "$output" \
+  || fail "uninstall suggested Podman's --external flag to Docker" "$output"
+
+printf 'ok: uninstall safely handles containers blocking image removal\n'
 
 # Fedora exposes the same home through /home and /var/home. New shims use the
 # canonical command path, while uninstall also recognizes the exact lexical

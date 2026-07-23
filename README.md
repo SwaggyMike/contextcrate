@@ -171,6 +171,12 @@ deletes that local state, but never the remote Sync Repo. For automation,
 `--yes` keeps local state and `--purge --yes` removes it. Purging loses any
 uncommitted or unpushed work in the local Sync Repo clone.
 
+Session and helper containers carry a Satchel ownership label. Uninstall
+removes stopped containers bearing that label before removing the image, but
+never stops an active session or an unrecognized container. If either blocks
+image removal, Satchel preserves it and prints the container engine's actual
+error and an inspection command.
+
 During interactive uninstall, Satchel also offers to retire the current
 machine when it is registered in the caravan. Retirement removes only that
 machine's folder from the upstream Sync Repo; it leaves Projects, shared

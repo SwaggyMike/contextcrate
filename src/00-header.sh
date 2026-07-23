@@ -28,6 +28,7 @@ SCRIPT_SHA_FILE="$SATCHEL_DIR/script-sha"
 INSTALL_PATH_FILE="$SATCHEL_DIR/install-path"
 SKILL_QUARANTINE_DIR="$SATCHEL_DIR/quarantine/skills"
 IMAGE="localhost/satchel:latest"
+MANAGED_CONTAINER_LABEL="io.github.swaggymike.satchel.managed=true"
 
 # Set by load_config / flags.
 MACHINE=""

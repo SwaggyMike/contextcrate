@@ -64,7 +64,7 @@ cmd_update() {
 }
 
 image_agent_versions() { # prints "claude X, codex Y" or nothing
-  "$(engine)" run --rm "$IMAGE" sh -c \
+  "$(engine)" run --rm --label "$MANAGED_CONTAINER_LABEL" "$IMAGE" sh -c \
     'printf "claude %s, codex %s" "$(claude --version 2>/dev/null | cut -d" " -f1)" "$(codex --version 2>/dev/null | cut -d" " -f2)"' \
     2>/dev/null || true
 }
