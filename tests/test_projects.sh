@@ -312,4 +312,66 @@ junk_id="$(enroll_project "$tmp/work/nested/junk" junk)"
 [ "$(repository_decision github.com/example/junk)" = tracked ]
 [ "$(project_for_path "$tmp/work/nested/junk")" = junk ]
 
+# Handoff generation protects itself from Ctrl-C spillover after the
+# interactive agent exits. QUIT remains unignored as the deliberate Ctrl-\
+# escape hatch advertised to the user.
+HANDOFF_SIGNAL_DIR="$tmp/handoff-signals"
+export HANDOFF_SIGNAL_DIR
+mkdir -p "$HANDOFF_SIGNAL_DIR"
+engine() { printf 'mock_engine'; }
+timeout() { shift; "$@"; }
+mock_engine() {
+  bash -c 'trap -p INT' > "$HANDOFF_SIGNAL_DIR/int"
+  bash -c 'trap -p QUIT' > "$HANDOFF_SIGNAL_DIR/quit"
+  printf '## Goal\nVerify handoff signal handling\n'
+}
+SATCHEL_HANDOFF_MODEL_CLAUDE=""
+trap '' INT
+generate_handoff claude sample "$tmp/work/app" 2> "$HANDOFF_SIGNAL_DIR/stderr"
+grep -Eq "trap -- '' (SIGINT|INT)" "$HANDOFF_SIGNAL_DIR/int"
+[ ! -s "$HANDOFF_SIGNAL_DIR/quit" ]
+grep -Fq 'writing handoff… (Ctrl-\ skips it)' "$HANDOFF_SIGNAL_DIR/stderr"
+trap -p INT | grep -Eq "trap -- '' (SIGINT|INT)"
+trap - INT
+
+# The runner itself ignores a late INT and lets its isolated writer finish.
+int_writer() {
+  : > "$HANDOFF_SIGNAL_DIR/int-started"
+  sleep 0.2
+  printf 'complete\n'
+}
+(
+  writer_rc=0
+  run_handoff_writer "$HANDOFF_SIGNAL_DIR/int-out" "$HANDOFF_SIGNAL_DIR/int-err" int_writer || writer_rc=$?
+  printf '%s\n' "$writer_rc" > "$HANDOFF_SIGNAL_DIR/int-rc"
+) &
+int_runner=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -f "$HANDOFF_SIGNAL_DIR/int-started" ] && break
+  sleep 0.05
+done
+kill -INT "$int_runner"
+wait "$int_runner"
+[ "$(cat "$HANDOFF_SIGNAL_DIR/int-rc")" = 0 ]
+grep -q '^complete$' "$HANDOFF_SIGNAL_DIR/int-out"
+
+# QUIT stops and reaps the writer, returning the intentional-skip status.
+quit_writer() {
+  : > "$HANDOFF_SIGNAL_DIR/quit-started"
+  sleep 30
+}
+(
+  writer_rc=0
+  run_handoff_writer "$HANDOFF_SIGNAL_DIR/quit-out" "$HANDOFF_SIGNAL_DIR/quit-err" quit_writer || writer_rc=$?
+  printf '%s\n' "$writer_rc" > "$HANDOFF_SIGNAL_DIR/quit-rc"
+) &
+quit_runner=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -f "$HANDOFF_SIGNAL_DIR/quit-started" ] && break
+  sleep 0.05
+done
+kill -QUIT "$quit_runner"
+wait "$quit_runner"
+[ "$(cat "$HANDOFF_SIGNAL_DIR/quit-rc")" = 131 ]
+
 printf 'ok: global project identity, discovery, and handoffs\n'

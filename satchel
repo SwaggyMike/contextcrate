@@ -1875,6 +1875,36 @@ compose_handoff_run_args() { # compose_handoff_run_args <agent> <home> <project>
   return 0
 }
 
+run_handoff_writer() { # run_handoff_writer <stdout-file> <stderr-file> <command...>
+  local outf="$1" errf="$2"; shift 2
+  local writer_pid="" rc=0 quit=0 had_monitor=0 old_int old_quit
+  old_int="$(trap -p INT)"
+  old_quit="$(trap -p QUIT)"
+  case "$-" in *m*) had_monitor=1 ;; esac
+
+  # Job control gives the writer its own process group. The terminal can then
+  # keep delivering a held Ctrl-C to Satchel without also interrupting the
+  # container engine. Ctrl-\ reaches this foreground shell; its handler
+  # terminates the isolated writer group and records an intentional skip.
+  trap '' INT
+  trap 'quit=1; [ -z "$writer_pid" ] || kill -TERM -- "-$writer_pid" 2>/dev/null || true' QUIT
+  set -m
+  "$@" >"$outf" 2>"$errf" &
+  writer_pid=$!
+  wait "$writer_pid" || rc=$?
+  if [ "$quit" -eq 1 ]; then
+    # The signal handler can interrupt wait before the writer has fully
+    # exited. Reap it before restoring normal terminal signal behavior.
+    wait "$writer_pid" 2>/dev/null || true
+    rc=131
+  fi
+  [ "$had_monitor" -eq 1 ] || set +m
+  trap - INT QUIT
+  [ -z "$old_int" ] || eval "$old_int"
+  [ -z "$old_quit" ] || eval "$old_quit"
+  return "$rc"
+}
+
 generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after the session ends; empty slug = machine scope
   local agent="$1" slug="$2" project="$3"
   local now scope prompt
@@ -1943,17 +1973,20 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
 
   compose_handoff_run_args "$agent" "$HOMES_DIR/$agent" "$project"
 
-  info "writing handoff… (Ctrl-C skips it)"
-  # Trap INT so Ctrl-C skips the handoff instead of killing satchel mid-script.
+  info "writing handoff… (Ctrl-\\ skips it)"
+  # A held Ctrl-C used to exit the interactive agent can keep sending INT
+  # after the agent is gone. Ignore that spillover while writing the handoff;
+  # Ctrl-\ (QUIT) is the distinct, deliberate escape hatch.
   # stderr goes to a scratch file so a failure can say WHY (a swallowed
   # "--skip-git-repo-check was not specified" once hid this for days).
-  local body="" rc=0 errf
+  local body="" rc=0 errf bodyf
   errf="$(mktemp)"
-  trap 'rc=130' INT
-  body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" 2>"$errf")" || rc=$?
-  trap - INT
-  if [ "$rc" -eq 130 ]; then
-    rm -f "$errf"
+  bodyf="$(mktemp)"
+  run_handoff_writer "$bodyf" "$errf" \
+    timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" || rc=$?
+  body="$(cat "$bodyf")"
+  if [ "$rc" -eq 131 ]; then
+    rm -f "$errf" "$bodyf"
     warn "handoff skipped — previous handoff kept"
     return 0
   fi
@@ -1961,7 +1994,7 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
   # session) — a valid outcome, not a model failure. Without this, an empty
   # session trips the fallback below and pays for a pointless second model.
   if printf '%s' "$body" | grep -q '^NO_HANDOFF'; then
-    rm -f "$errf"
+    rm -f "$errf" "$bodyf"
     info "no work to hand off — previous handoff kept"
     return 0
   fi
@@ -1973,17 +2006,17 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
     if [ -n "$model" ]; then
       warn "handoff model '$model' failed — retrying with the agent's default (fix with: satchel settings $setting <model>)"
       rc=0
-      trap 'rc=130' INT
-      body="$(timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" 2>"$errf")" || rc=$?
-      trap - INT
-      if [ "$rc" -eq 130 ]; then
-        rm -f "$errf"
+      run_handoff_writer "$bodyf" "$errf" \
+        timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" || rc=$?
+      body="$(cat "$bodyf")"
+      if [ "$rc" -eq 131 ]; then
+        rm -f "$errf" "$bodyf"
         warn "handoff skipped — previous handoff kept"
         return 0
       fi
     fi
     if printf '%s' "$body" | grep -q '^NO_HANDOFF'; then
-      rm -f "$errf"
+      rm -f "$errf" "$bodyf"
       info "no work to hand off — previous handoff kept"
       return 0
     fi
@@ -1992,11 +2025,11 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
       if [ -s "$errf" ]; then
         warn "the agent said: $(tail -n 1 "$errf")"
       fi
-      rm -f "$errf"
+      rm -f "$errf" "$bodyf"
       return 0
     fi
   fi
-  rm -f "$errf"
+  rm -f "$errf" "$bodyf"
   if [ "$multi" -eq 1 ]; then
     local ids="" saved
     for vi in "${vis_ids[@]}"; do ids+="$vi "; done
@@ -2721,7 +2754,12 @@ cmd_session() {
     launch=(codex -c 'sandbox_mode="danger-full-access"' -c check_for_update_on_startup=false)
   fi
 
+  # Keep Satchel itself alive through Ctrl-C: caught traps reset to the
+  # default in the external container engine, so the interactive agent still
+  # receives SIGINT normally. Once it exits, the same no-op trap absorbs any
+  # repeats from a held key through cleanup and handoff generation.
   local rc=0
+  trap ':' INT
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
 
   # Normalize now, before the handoff writer (sandboxed, running as the user)
@@ -2762,6 +2800,7 @@ cmd_session() {
     stop_temporary_ssh_agent
     trap - EXIT
   fi
+  trap - INT
   return "$rc"
 }
 

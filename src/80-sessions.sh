@@ -324,7 +324,12 @@ cmd_session() {
     launch=(codex -c 'sandbox_mode="danger-full-access"' -c check_for_update_on_startup=false)
   fi
 
+  # Keep Satchel itself alive through Ctrl-C: caught traps reset to the
+  # default in the external container engine, so the interactive agent still
+  # receives SIGINT normally. Once it exits, the same no-op trap absorbs any
+  # repeats from a held key through cleanup and handoff generation.
   local rc=0
+  trap ':' INT
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
 
   # Normalize now, before the handoff writer (sandboxed, running as the user)
@@ -365,5 +370,6 @@ cmd_session() {
     stop_temporary_ssh_agent
     trap - EXIT
   fi
+  trap - INT
   return "$rc"
 }
