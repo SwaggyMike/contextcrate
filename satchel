@@ -480,6 +480,10 @@ slugify() { # project dir name → safe file name
   printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'
 }
 
+valid_project_id() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
 machine_projects_file() { printf '%s/machines/%s/projects.json' "$SYNC_DIR" "$MACHINE"; }
 repository_registry_file() { printf '%s/repositories.json' "$SYNC_DIR"; }
 
@@ -678,6 +682,7 @@ visible_candidates() { # visible_candidates <launch-dir> → path<TAB>portable-o
     decision="$(repository_decision "$identity")"
     [ -z "$decision" ] && printf '%s\t%s\n' "$path" "$identity"
   done < <(repository_roots "${roots[@]}")
+  return 0
 }
 
 session_path() { # real path → the path the agent sees for it in this session
@@ -687,6 +692,7 @@ session_path() { # real path → the path the agent sees for it in this session
 unique_project_id() {
   local wanted id n=2
   wanted="$(slugify "$1")"; [ -n "$wanted" ] || wanted=project
+  valid_project_id "$wanted" || wanted="project$wanted"
   id="$wanted"
   while [ -e "$SYNC_DIR/projects/$id" ]; do id="$wanted-$n"; n=$((n + 1)); done
   printf '%s' "$id"
@@ -716,7 +722,8 @@ enroll_project() { # enroll_project <path> [id] → prints id
   fi
   if [ -z "$id" ]; then id="$(unique_project_id "$(basename "$path")")"; fi
   id="$(slugify "$id")"
-  [ -n "$id" ] || die "project id cannot be empty"
+  valid_project_id "$id" \
+    || die "project id must start with a letter or number and contain only letters, numbers, dots, underscores, and hyphens"
   if [ -f "$SYNC_DIR/projects/$id/project.json" ] && [ -n "$identity" ]; then
     meta_remote="$(jq -r '.git_remote // empty' "$SYNC_DIR/projects/$id/project.json")"
     if [ -n "$meta_remote" ] && [ "$(canonical_remote "$meta_remote")" != "$identity" ]; then
@@ -2747,7 +2754,7 @@ cmd_track() {
 
 untrack_project() { # untrack_project <project-id> [known-origin]
   local id="$1" identity="${2:-}" meta dir f
-  [ "$id" = "$(slugify "$id")" ] || die "invalid project id '$id'"
+  valid_project_id "$id" || die "invalid or unsafe project id '$id'"
   dir="$SYNC_DIR/projects/$id"
   [ -d "$dir" ] || die "unknown project id '$id' (run satchel status)"
   meta="$dir/project.json"

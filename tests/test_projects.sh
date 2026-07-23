@@ -14,6 +14,10 @@ printf 'MACHINE=testbox\nSYNC_URL=test\n' > "$SATCHEL_DIR/config"
 source <(sed '$d' "$repo_dir/satchel")
 load_config
 
+# Keep pure project tests independent of the host container engine.
+podman_rootless() { return 1; }
+SSH_STATE=none
+
 # Projects are Git repositories. Portable origins drive global decisions;
 # local/no-origin repositories remain available through explicit tracking.
 git init -q -b main "$tmp/work/app"
@@ -109,6 +113,11 @@ local_id="$(enroll_project "$tmp/work/local" local-only)"
 [ "$local_id" = local-only ]
 [ -z "$(project_identity "$tmp/work/local")" ]
 [ -z "$(visible_candidates "$tmp/work/local")" ]
+! (enroll_project "$tmp/work/local" .. 2>/dev/null)
+! (enroll_project "$tmp/work/local" .git 2>/dev/null)
+! (untrack_project .. 2>/dev/null)
+[ ! -e "$SATCHEL_DIR/sync/handoffs" ]
+[ ! -e "$SATCHEL_DIR/sync/project.json" ]
 
 # Discovery recursively recognizes globally tracked origins without a prior
 # path mapping on this machine, and ignored/unknown origins stay distinct.
