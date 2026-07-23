@@ -176,43 +176,53 @@ Never record passwords, tokens, keys, cookies, complete environment dumps, crede
   warn "BASELINE INSPECTION - the real machine is visible at /host read-only; only the synced machine-knowledge directory is writable"
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" || rc=$?
 
+  if [ "$rc" -ne 0 ]; then
+    warn "baseline agent exited with status $rc; machine baseline did not complete"
+    rm -rf "$before"
+    return "$rc"
+  fi
   if [ ! -f "$inventory" ] || { [ -f "$before/inventory.md" ] && cmp -s "$before/inventory.md" "$inventory" 2>/dev/null; }; then
     warn "machine baseline was not written; onboarding remains incomplete"
-    [ "$rc" -eq 0 ] || warn "baseline agent exited with status $rc; continuing to the requested session"
-    rm -rf "$before"; return 0
+    rm -rf "$before"; return 1
   fi
   if [ "$(baseline_marker_version)" != "$BASELINE_VERSION" ]; then
     SYNC_BLOCK_REASON="machine inventory changed without a valid baseline marker"
     warn "$SYNC_BLOCK_REASON; automatic sync is disabled until the machine knowledge is reviewed"
-    rm -rf "$before"; return 0
+    rm -rf "$before"; return 1
   fi
   if ! baseline_secret_scan_tree "$before" "$machine"; then
     SYNC_BLOCK_REASON="the baseline machine knowledge contains a possible secret in newly-added content"
     warn "$SYNC_BLOCK_REASON; no suspected value was printed and automatic sync is disabled"
-    rm -rf "$before"; return 0
+    rm -rf "$before"; return 1
   fi
   rm -rf "$before"
   warn_machine_notes_size
   quiet_push "machine baseline v$BASELINE_VERSION on $MACHINE"
-  success "machine baseline saved to the private Sync Repo"
   return 0
 }
 
 maybe_offer_baseline() { # maybe_offer_baseline <agent> <home>
-  local agent="$1" home="$2" choice skip
+  local agent="$1" home="$2" choice skip rc=0
+  BASELINE_LAUNCH_OUTCOME=continue
+  BASELINE_LAUNCH_STATUS=0
   [ "$HOST_MODE" -eq 0 ] || return 0
   sync_ready && [ -t 0 ] && baseline_authenticated "$agent" "$home" || return 0
   [ -z "$(baseline_marker_version)" ] || return 0
   skip="$(baseline_skip_file)"; [ -f "$skip" ] && return 0
   choice="$(choose_baseline)"
   case "$choice" in
-    yes) run_machine_baseline "$agent" "$home" ;;
+    yes)
+      BASELINE_LAUNCH_OUTCOME=attempted
+      run_machine_baseline "$agent" "$home" || rc=$?
+      BASELINE_LAUNCH_STATUS="$rc"
+      ;;
     never)
       printf 'suppressed at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$skip"
       quiet_push "skip machine baseline on $MACHINE"
       info "machine-baseline reminder disabled; remove ${skip#"$SYNC_DIR"/} to restore it"
       ;;
   esac
+  return 0
 }
 
 offer_baseline_refresh() {
@@ -234,5 +244,11 @@ offer_baseline_refresh() {
   fi
   ensure_image
   rm -f "$(baseline_skip_file)"
-  run_machine_baseline "$agent" "$HOMES_DIR/$agent"
+  local rc=0
+  run_machine_baseline "$agent" "$HOMES_DIR/$agent" || rc=$?
+  [ "$rc" -eq 130 ] && return 130
+  if [ "$rc" -eq 0 ]; then
+    success "machine baseline saved to the private Sync Repo"
+  fi
+  return 0
 }

@@ -93,4 +93,46 @@ baseline_secret_scan_tree "$old_tree" "$new_tree"
 printf '# Time Machine\n- password = definitely-not-safe\n' > "$new_tree/guides/time-machine.md"
 ! baseline_secret_scan_tree "$old_tree" "$new_tree"
 
+# The prompt's three choices retain their simple contract.
+[ "$(choose_baseline <<< y 2>/dev/null)" = yes ]
+[ "$(choose_baseline <<< '' 2>/dev/null)" = later ]
+[ "$(choose_baseline <<< d 2>/dev/null)" = never ]
+
+# Baseline execution reports its result truthfully. A clean exit without a
+# written inventory is failure, Ctrl-C remains 130, and a validated inventory
+# succeeds and reaches the Sync Repo push.
+baseline_engine="$tmp/baseline-engine"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'if [ "${BASELINE_TEST_WRITE:-0}" = 1 ]; then' \
+  '  printf "<!-- satchel-machine-baseline version=2 generated=2026-07-23T04:05:06Z -->\n# Inventory\n" > "$BASELINE_TEST_INVENTORY"' \
+  'fi' \
+  'exit "${BASELINE_TEST_RC:-0}"' \
+  > "$baseline_engine"
+chmod +x "$baseline_engine"
+engine() { printf '%s' "$baseline_engine"; }
+prepare_baseline_home() { :; }
+compose_baseline_run_args() { RUN_ARGS=(); }
+warn_machine_notes_size() { :; }
+pushed=0
+quiet_push() { pushed=1; }
+export BASELINE_TEST_INVENTORY="$inventory"
+
+rm -f "$inventory"
+export BASELINE_TEST_RC=0 BASELINE_TEST_WRITE=0
+rc=0
+run_machine_baseline codex "$tmp/codex" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ]
+[ "$pushed" -eq 0 ]
+
+export BASELINE_TEST_RC=130
+rc=0
+run_machine_baseline codex "$tmp/codex" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 130 ]
+[ "$pushed" -eq 0 ]
+
+export BASELINE_TEST_RC=0 BASELINE_TEST_WRITE=1
+run_machine_baseline codex "$tmp/codex" >/dev/null 2>&1
+[ "$pushed" -eq 1 ]
+
 printf 'ok: machine baseline state, mounts, auth, and secret scan\n'

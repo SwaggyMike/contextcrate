@@ -43,5 +43,7 @@ BASELINE_VERSION=2
 MACHINE_NOTES_WORD_LIMIT=750
 HANDOFF_RETENTION=10
 SYNC_BLOCK_REASON=""
+BASELINE_LAUNCH_OUTCOME="continue"
+BASELINE_LAUNCH_STATUS=0
 
 # ---------------------------------------------------------------- helpers

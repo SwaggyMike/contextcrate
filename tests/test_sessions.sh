@@ -144,7 +144,6 @@ prune_all_handoffs() { :; }
 update_check() { :; }
 refresh_project_paths() { :; }
 project_for_path() { printf 'sample'; }
-maybe_offer_baseline() { :; }
 materialize_mcp() { printf 'materialize\n' >> "$events"; }
 ssh_preflight() { SSH_STATE=none; }
 write_memory_file() { mkdir -p "$2/.codex"; printf 'memory\n' >> "$events"; }
@@ -156,6 +155,41 @@ report_skill_changes() { :; }
 warn_machine_notes_size() { :; }
 quiet_push() { printf 'push\n' >> "$events"; }
 
+# Accepting the automatic baseline consumes this launch. Success returns to
+# the shell with the agreed next step; failure and Ctrl-C preserve their
+# statuses. None of them may reach normal session materialization or launch.
+maybe_offer_baseline() {
+  BASELINE_LAUNCH_OUTCOME=attempted
+  BASELINE_LAUNCH_STATUS=0
+}
+: > "$events"
+baseline_output="$(cd "$tmp/work/app" && cmd_session codex 2>&1)"
+grep -q "machine inventory saved.*Run .*codex.*again" <<< "$baseline_output"
+[ ! -s "$events" ]
+
+maybe_offer_baseline() {
+  BASELINE_LAUNCH_OUTCOME=attempted
+  BASELINE_LAUNCH_STATUS=7
+}
+rc=0
+(cd "$tmp/work/app" && cmd_session codex) >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 7 ]
+[ ! -s "$events" ]
+
+maybe_offer_baseline() {
+  BASELINE_LAUNCH_OUTCOME=attempted
+  BASELINE_LAUNCH_STATUS=130
+}
+rc=0
+(cd "$tmp/work/app" && cmd_session codex) >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 130 ]
+[ ! -s "$events" ]
+
+# Deferring or disabling the offer leaves the requested session untouched.
+maybe_offer_baseline() {
+  BASELINE_LAUNCH_OUTCOME=continue
+  BASELINE_LAUNCH_STATUS=0
+}
 (cd "$tmp/work/app" && cmd_session codex)
 first_materialize="$(grep -n '^materialize$' "$events" | head -n1 | cut -d: -f1)"
 first_ownership="$(grep -n '^ownership:' "$events" | head -n1 | cut -d: -f1)"

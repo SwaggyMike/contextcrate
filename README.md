@@ -46,9 +46,11 @@ baseline. If accepted, the agent inspects the real host through a read-only
 `/host` mount and shows its proposed files for approval. The broad, dated
 snapshot goes in `inventory.md`; only concise operational facts go in
 `notes.md`; substantial reusable procedures may go in topic guides. It then
-continues into the session you originally requested. The prompt can be
-deferred or disabled; `satchel init` offers a later refresh for an
-already-initialized machine.
+returns to the shell; run the agent command again when you are ready for a
+normal session. Choosing **Not now** or **Don't ask again** continues directly
+into the session you originally requested. The prompt can be deferred or
+disabled; `satchel init` offers a later refresh for an already-initialized
+machine.
 
 After substantive work in an unknown Git repository with a network `origin`,
 Satchel asks once whether to track it as a Project. The decision follows the

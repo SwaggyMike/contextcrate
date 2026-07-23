@@ -38,6 +38,10 @@ became harder to find as startup context grew.
 - Normal sandboxed launches are silent. Only exceptional or dangerous states,
   notably Host Sessions, produce a pre-launch warning; agent TUIs immediately
   replace routine banner output anyway.
+- Accepting the automatic first-launch Machine Baseline makes that inspection
+  the entire command: success, failure, or interruption returns to the shell
+  instead of silently opening a second agent session. Deferring or disabling
+  the offer preserves the normal session the user originally requested.
 
 The numeric limits are guardrails, not data-loss rules. Essential information
 is consolidated or moved to an on-demand guide rather than discarded merely

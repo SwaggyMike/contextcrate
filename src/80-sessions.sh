@@ -262,11 +262,19 @@ cmd_session() {
   slug="$(project_for_path "$project")"
 
   # Authentication normally happens inside an agent's first session. On the
-  # next launch, offer a safe machine baseline before continuing into the
-  # exact session the user originally requested.
+  # next launch, offer a safe machine baseline. Accepting makes the baseline
+  # the whole operation; declining preserves the originally requested launch.
   case "${1:-}" in
     --version|-v|--help|-h) ;;
-    *) maybe_offer_baseline "$agent" "$home" ;;
+    *)
+      maybe_offer_baseline "$agent" "$home"
+      if [ "$BASELINE_LAUNCH_OUTCOME" = attempted ]; then
+        if [ "$BASELINE_LAUNCH_STATUS" -eq 0 ]; then
+          success "machine inventory saved. Run $(agent_launch_command "$agent") again when you're ready for a normal session."
+        fi
+        return "$BASELINE_LAUNCH_STATUS"
+      fi
+      ;;
   esac
 
   # First-run convenience: agents want a git identity for project commits.
