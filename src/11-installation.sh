@@ -22,9 +22,18 @@ is_satchel_shim() {
 # an exact, shell-escaped absolute command, so compare against the line this
 # installation would generate rather than evaluating file content.
 shim_owned_by_install() { # shim_owned_by_install <path> <agent> <satchel-path>
-  local path="$1" agent="$2" self="$3" expected
+  local path="$1" agent="$2" self="$3" expected sibling sibling_real
   [ -f "$path" ] || return 1
   printf -v expected 'exec %q %s "$@"' "$self" "$agent"
+  grep -Fqxs "$expected" "$path" && return 0
+
+  # Older installers wrote the lexical sibling path. Accept that spelling
+  # only while it resolves to this exact installed command; this handles
+  # Fedora's /home → /var/home alias without trusting a generic marker.
+  sibling="$(dirname "$path")/satchel"
+  sibling_real="$(readlink -f "$sibling" 2>/dev/null || true)"
+  [ "$sibling_real" = "$self" ] || return 1
+  printf -v expected 'exec %q %s "$@"' "$sibling" "$agent"
   grep -Fqxs "$expected" "$path"
 }
 
@@ -106,15 +115,15 @@ remove_tree_for_uninstall() { # validated exact state tree only; sudo fallback
 }
 
 installed_satchel_path() { # true only for an installer-owned script location
-  local self="$1" recorded="" self_dir
+  local self="$1" recorded="" self_dir candidate
   self_dir="$(dirname "$self")"
   if [ -s "$INSTALL_PATH_FILE" ]; then
     recorded="$(readlink -f "$(cat "$INSTALL_PATH_FILE")" 2>/dev/null || true)"
     [ "$recorded" = "$self" ] && return 0
   fi
-  case "$self" in
-    /usr/local/bin/satchel|"$HOME/.local/bin/satchel") return 0 ;;
-  esac
+  for candidate in /usr/local/bin/satchel "$HOME/.local/bin/satchel"; do
+    [ "$(readlink -f "$candidate" 2>/dev/null || true)" = "$self" ] && return 0
+  done
   [ -d "$self_dir/.satchel" ] \
     && [ "$(readlink -f "$self_dir/.satchel")" = "$(readlink -f "$SATCHEL_DIR")" ] \
     && { [ -f "$self_dir/.satchel/script-sha" ] \
@@ -166,8 +175,25 @@ remove_satchel_image() {
   fi
 }
 
+choose_uninstall_scope() {
+  local state="$1" reply
+  printf '%s\n' \
+    'What should Satchel uninstall?' \
+    '' \
+    '  1) Program only — remove command, shims, and image; keep local data for reinstall' \
+    "  2) Everything — also permanently delete local state at $state" \
+    '  3) Cancel' >&2
+  read -r -p "$(prompt_text 'Choice [3]: ')" reply || reply=""
+  case "$reply" in
+    1) printf 'keep' ;;
+    2) printf 'purge' ;;
+    *) printf 'cancel' ;;
+  esac
+}
+
 cmd_uninstall() {
-  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead shim_root seen_shims=$'\n'
+  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead
+  local shim_root seen_key scope seen_shims=$'\n'
   for arg in "$@"; do
     case "$arg" in
       --purge) purge=1 ;;
@@ -182,6 +208,15 @@ cmd_uninstall() {
   install_dir="$(dirname "$self")"
   state="$(readlink -f "$SATCHEL_DIR")"
   home_real="$(readlink -f "$HOME")"
+
+  if [ "$yes" -eq 0 ] && [ "$purge" -eq 0 ]; then
+    scope="$(choose_uninstall_scope "$state")"
+    case "$scope" in
+      keep) yes=1 ;;
+      purge) purge=1 ;;
+      *) info "cancelled"; return 0 ;;
+    esac
+  fi
 
   if [ "$purge" -eq 1 ]; then
     case "$state" in
@@ -227,8 +262,14 @@ cmd_uninstall() {
   for shim_root in /usr/local/bin "$HOME/.local/bin" "$(shim_dir)" "$install_dir"; do
     for agent in claude codex; do
       p="$shim_root/$agent"
-      [[ "$seen_shims" != *$'\n'"$p"$'\n'* ]] || continue
-      seen_shims+="$p"$'\n'
+      # Deduplicate regular files reached through aliased parent directories,
+      # but keep a symlink and its target distinct so both can be removed.
+      seen_key="$p"
+      if [ -f "$p" ] && [ ! -L "$p" ]; then
+        seen_key="$(readlink -f "$p" 2>/dev/null || printf '%s' "$p")"
+      fi
+      [[ "$seen_shims" != *$'\n'"$seen_key"$'\n'* ]] || continue
+      seen_shims+="$seen_key"$'\n'
       if shim_owned_by_install "$p" "$agent" "$self"; then
         remove_file_for_uninstall "$p"
         info "removed shim $p"

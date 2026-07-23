@@ -102,7 +102,8 @@ if [ -n "$sha" ]; then
   printf '%s\n' "$sha" > "$STATE_DIR/script-sha"
 fi
 mkdir -p "$STATE_DIR"
-printf '%s\n' "$(readlink -f "$BIN/satchel")" > "$STATE_DIR/install-path"
+installed_satchel="$(readlink -f "$BIN/satchel")"
+printf '%s\n' "$installed_satchel" > "$STATE_DIR/install-path"
 say "installed $BIN/satchel${sha:+ (commit ${sha:0:7})}"
 
 shims_installed=()
@@ -126,9 +127,9 @@ if [ "$install_shims" = y ]; then
       say "  remove it (or the host CLI it points to) and rerun to route '$agent' through satchel."
       continue
     fi
-    # Absolute path, not PATH lookup: shims keep working from a boot script or
-    # cron before the user's PATH is set up.
-    printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$BIN/satchel" "$agent" > "$shim"
+    # Canonical absolute path, not PATH lookup: shims keep working from a boot
+    # script or cron, and /home → /var/home aliases cannot confuse uninstall.
+    printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' "$installed_satchel" "$agent" > "$shim"
     chmod 755 "$shim"
     say "installed shim $shim"
     shims_installed+=("$shim")

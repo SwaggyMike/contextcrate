@@ -283,6 +283,46 @@ grep -q 'removed container image' <<< "$output" \
 
 printf 'ok: satchel uninstall preserves local state\n'
 
+# Fedora exposes the same home through /home and /var/home. New shims use the
+# canonical command path, while uninstall also recognizes the exact lexical
+# sibling written by older installers.
+canonical_home="$test_home/canonical-home"
+alias_home="$test_home/home-alias"
+mkdir -p "$canonical_home/.local"
+ln -s "$canonical_home" "$alias_home"
+alias_bin="$alias_home/.local/bin"
+
+output="$(HOME="$alias_home" SATCHEL_BIN="$alias_bin" SATCHEL_SHIMS=y \
+  bash "$repo_dir/install.sh" </dev/null 2>&1)"
+canonical_command="$canonical_home/.local/bin/satchel"
+for agent in claude codex; do
+  grep -Fq "exec $canonical_command $agent" "$canonical_home/.local/bin/$agent" \
+    || fail "installer did not canonicalize the $agent shim target" "$output"
+  printf '#!/usr/bin/env bash\n# satchel shim\nexec %q %s "$@"\n' \
+    "$alias_bin/satchel" "$agent" > "$canonical_home/.local/bin/$agent"
+  chmod 755 "$canonical_home/.local/bin/$agent"
+done
+# Recreate a pre-install-path normal layout so the standard-location fallback,
+# not self-contained state detection, must recognize the aliased command.
+mv "$canonical_home/.local/bin/.satchel" "$canonical_home/.satchel"
+rm -f "$canonical_home/.satchel/install-path"
+
+set +e
+output="$(HOME="$alias_home" "$alias_bin/satchel" uninstall --yes 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "symlinked-home uninstall failed (rc=$rc)" "$output"
+[ ! -e "$canonical_command" ] || fail "symlinked-home uninstall left the command behind" "$output"
+[ -d "$canonical_home/.satchel" ] || fail "symlinked-home uninstall deleted preserved state" "$output"
+for agent in claude codex; do
+  [ ! -e "$canonical_home/.local/bin/$agent" ] \
+    || fail "symlinked-home uninstall left the $agent shim behind" "$output"
+done
+! grep -q 'ambiguous Satchel shim' <<< "$output" \
+  || fail "symlinked-home uninstall treated its own shim as ambiguous" "$output"
+
+printf 'ok: symlinked-home uninstall removes exact owned shims\n'
+
 # Legacy shims and shims owned by another installation are ambiguous. An
 # uninstall must leave both untouched instead of breaking another command.
 legacy_home="$test_home/legacy-home"
@@ -314,7 +354,7 @@ grep -q "left ambiguous Satchel shim $legacy_path/claude" <<< "$output" \
 
 printf 'ok: satchel uninstall preserves shims it cannot prove it owns\n'
 
-# A plain uninstall remains confirmation-gated.
+# A plain uninstall presents all scopes and defaults to cancellation.
 cancel_bin="$test_home/uninstall-cancel"
 mkdir -p "$cancel_bin/.satchel"
 cp "$repo_dir/satchel" "$cancel_bin/satchel"
@@ -322,14 +362,59 @@ chmod 755 "$cancel_bin/satchel"
 printf 'MACHINE=uninstall-cancel\nSYNC_URL=\n' > "$cancel_bin/.satchel/config"
 printf '%s\n' "$cancel_bin/satchel" > "$cancel_bin/.satchel/install-path"
 set +e
-output="$(printf 'n\n' | HOME="$test_home" "$cancel_bin/satchel" uninstall 2>&1)"
+output="$(printf '\n' | HOME="$test_home" "$cancel_bin/satchel" uninstall 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "declining satchel uninstall failed (rc=$rc)" "$output"
 [ -x "$cancel_bin/satchel" ] || fail "declining uninstall still removed the command" "$output"
+grep -q '1) Program only' <<< "$output" || fail "uninstall did not offer program-only removal" "$output"
+grep -q '2) Everything' <<< "$output" || fail "uninstall did not offer complete removal" "$output"
 grep -q 'cancelled' <<< "$output" || fail "declined uninstall was not reported as cancelled" "$output"
 
-printf 'ok: satchel uninstall is confirmation-gated\n'
+printf 'ok: satchel uninstall defaults to cancellation\n'
+
+# Interactive program-only removal keeps state without a second ambiguous
+# confirmation after the user has made an explicit choice.
+choice_keep_bin="$test_home/uninstall-choice-keep"
+mkdir -p "$choice_keep_bin/.satchel/home/codex"
+cp "$repo_dir/satchel" "$choice_keep_bin/satchel"
+chmod 755 "$choice_keep_bin/satchel"
+printf 'MACHINE=choice-keep\nSYNC_URL=\n' > "$choice_keep_bin/.satchel/config"
+printf '%s\n' "$choice_keep_bin/satchel" > "$choice_keep_bin/.satchel/install-path"
+printf 'login state\n' > "$choice_keep_bin/.satchel/home/codex/auth.json"
+
+set +e
+output="$(printf '1\n' | HOME="$test_home" "$choice_keep_bin/satchel" uninstall 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "interactive program-only uninstall failed (rc=$rc)" "$output"
+[ ! -e "$choice_keep_bin/satchel" ] || fail "program-only choice left the command behind" "$output"
+[ -f "$choice_keep_bin/.satchel/home/codex/auth.json" ] \
+  || fail "program-only choice deleted local state" "$output"
+
+printf 'ok: interactive uninstall can preserve local state\n'
+
+# Interactive complete removal gets a final destructive confirmation, then
+# removes the same exact state tree as --purge.
+choice_purge_bin="$test_home/uninstall-choice-purge"
+mkdir -p "$choice_purge_bin/.satchel/home/codex"
+cp "$repo_dir/satchel" "$choice_purge_bin/satchel"
+chmod 755 "$choice_purge_bin/satchel"
+printf 'MACHINE=choice-purge\nSYNC_URL=\n' > "$choice_purge_bin/.satchel/config"
+printf '%s\n' "$choice_purge_bin/satchel" > "$choice_purge_bin/.satchel/install-path"
+printf 'login state\n' > "$choice_purge_bin/.satchel/home/codex/auth.json"
+
+set +e
+output="$(printf '2\ny\n' | HOME="$test_home" "$choice_purge_bin/satchel" uninstall 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "interactive complete uninstall failed (rc=$rc)" "$output"
+[ ! -e "$choice_purge_bin/satchel" ] || fail "complete choice left the command behind" "$output"
+[ ! -e "$choice_purge_bin/.satchel" ] || fail "complete choice left local state behind" "$output"
+grep -q 'permanently deletes' <<< "$output" \
+  || fail "complete choice did not warn before deleting local state" "$output"
+
+printf 'ok: interactive uninstall can purge local state\n'
 
 # --- --purge requires and removes an exact Satchel state tree ---------------
 

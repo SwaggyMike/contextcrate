@@ -31,8 +31,9 @@ caravan
 setup
   satchel link [claude|codex]  redirect claude/codex commands through satchel
   satchel unlink [claude|codex] remove the redirects (use the native CLIs directly)
-  satchel uninstall             remove Satchel, its shims and image; preserve local state
-                               (--purge also deletes local state; --yes skips confirmation)
+  satchel uninstall             remove Satchel, its shims and image; interactively choose
+                               whether to keep or purge local state (--yes keeps it;
+                               --purge --yes removes everything without prompting)
   satchel import claude|codex  copy this host's agent login into satchel's sessions
   satchel mcp list|add|remove  manage the MCP Registry (synced to every machine);
                              bare 'add' or 'remove' walks through it interactively

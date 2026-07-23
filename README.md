@@ -161,13 +161,14 @@ status` reports any locally quarantined attempts that still need attention.
 | `satchel doctor` | check this machine's setup end to end — engine, image, key, sync, MCP endpoints |
 | `satchel image` | build the shared agent image if it is missing |
 | `satchel update` | self-update from `main` (lists the commits it pulls in) and rebuild the agent image |
-| `satchel uninstall` | remove Satchel and its shims while preserving local state; `--purge` also deletes local state |
+| `satchel uninstall` | remove Satchel and choose whether to preserve or purge local state |
 
-`satchel uninstall` asks for confirmation, removes the installed command,
-Satchel-owned shims, and the Satchel container image, while keeping the local
-Sync Repo clone, agent logins, and transcripts so a reinstall can resume where
-it left off. `satchel uninstall --purge` explicitly deletes that local state
-too (not the remote Sync Repo); `--yes` makes either form non-interactive.
+`satchel uninstall` asks whether to remove only the program or everything
+local. Program-only removal deletes the installed command, Satchel-owned
+shims, and the container image while keeping the Sync Repo clone, agent
+logins, and transcripts for a future reinstall. Everything also permanently
+deletes that local state, but never the remote Sync Repo. For automation,
+`--yes` keeps local state and `--purge --yes` removes it.
 
 ## What syncs, what doesn't
 
