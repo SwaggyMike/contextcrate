@@ -16,7 +16,8 @@ curl -fsSL https://raw.githubusercontent.com/SwaggyMike/satchel/main/install.sh 
 
 The installer chains straight into `satchel init`, which names the machine
 and connects your private Sync Repo (self-hosted Gitea, private GitHub repo,
-or a bare repo on any SSH box). Then, in any directory:
+a bare repo on any SSH box, or a local bare repo on a shared NFS mount). Then,
+in any directory:
 
 ```sh
 claude        # Claude Code in a throwaway container, scoped to this directory
@@ -41,24 +42,31 @@ continues into the session you originally requested. The prompt can be
 deferred or disabled; `satchel init` offers a later refresh for an
 already-initialized machine.
 
-After the first meaningful session in a new directory, Satchel asks once whether
-to track it as a project. If accepted, the agent writes a short handoff; the
-next session on that project — on any machine — picks it up. Rejected paths
-are remembered on that machine and their child directories remain eligible.
-Sessions that stay outside any project (a Host Session in /root, say) still
-write a handoff, kept per machine and loaded by the next such session there.
-Use `satchel track [name]` or `satchel untrack` to change the choice.
+After substantive work in an unknown Git repository with a network `origin`,
+Satchel asks once whether to track it as a Project. The decision follows the
+normalized, credential-free origin across machines: tracked repos get their
+own handoffs; ignored repos do not ask again. Merely opening, listing, or
+casually reading a repo does not prompt, and ordinary directories never do.
+Work outside tracked Projects—including work in ignored repos—still gets a
+machine handoff. Use `satchel track [id]` to explicitly enroll the enclosing
+Git repo, including one with a local/NFS or missing origin. Use `satchel
+untrack [id]` to ignore it globally and remove its active Project handoffs.
 
 Working across repos that influence each other? `satchel claude --with
 ../other-repo` mounts the extra directory alongside the project (repeat the
 flag for more); home directories and / are refused as extras, same as the
 primary mount. You can also just launch from a parent directory that holds
-several tracked projects. Either way, work is filed by where it happened:
+several repos. Satchel recursively discovers repositories only inside those
+explicit mount roots, both before and after the session, so newly cloned repos
+and checkouts never opened on that host are classified by origin. Either way,
+work is filed by where it happened:
 at session end each tracked project you touched gets its own handoff, and
 work outside every project goes under the machine. Multi-project sessions
 see the list of visible projects and read each one's latest handoff on
-demand instead of loading them all up front. Each handoff directory keeps the
-latest ten files; older versions remain recoverable through Sync Repo history.
+demand instead of loading them all up front. Nested work belongs to the nearest
+enclosing repo; multiple checkouts with the same origin share one Project.
+Each handoff directory keeps the latest ten files; older versions remain
+recoverable through Sync Repo history.
 
 Each machine has a small, always-loaded `notes.md` for enduring operational
 facts and machine-wide risks, a dated `inventory.md` read only when system
@@ -110,12 +118,12 @@ judgment.)
 | command | what it does |
 | --- | --- |
 | `satchel claude` / `satchel codex` | run a session in `$PWD` (the `claude`/`codex` shims do the same) |
-| `satchel track [name]` | explicitly track the current directory as a project |
-| `satchel untrack` | stop tracking the current path on this machine; children remain eligible |
+| `satchel track [id]` | explicitly track the enclosing Git repo; an existing ID links a local/no-origin checkout |
+| `satchel untrack [id]` | globally ignore the enclosing or named Project and remove its active handoffs |
 | `satchel --host claude` | Host Session: sandbox off, host `/` at `/host` — for fixing the machine itself |
 | `satchel init` | name this machine, connect the Sync Repo |
 | `satchel sync` | commit, pull, push the Sync Repo |
-| `satchel status` | caravan roster, handoffs, MCP servers, skills |
+| `satchel status [--ignored]` | caravan roster, Project IDs/origins, ignored count or list, handoffs, MCP servers, skills |
 | `satchel key` | show this machine's SSH public key (generates one if needed) |
 | `satchel retire [machine]` | remove a machine from the caravan — interactive picker without a name |
 | `satchel import claude\|codex` | copy the host's agent login into satchel's sessions |
@@ -126,9 +134,9 @@ judgment.)
 
 ## What syncs, what doesn't
 
-The Sync Repo's root `profile.md` and `preferences.md` are global. Project
-identity and bounded timestamped handoffs live under `projects/`; host paths,
-tracking decisions, notes, inventory, and guides live under
+The Sync Repo's root `profile.md`, `preferences.md`, and `repositories.json`
+are global. Project identity and bounded timestamped handoffs live under
+`projects/`; checkout paths, notes, inventory, and guides live under
 `machines/<machine>/`. Global skills live under `skills/shared/`.
 
 Handoffs, MCP registry + tokens (private repo, your SSH keys — see

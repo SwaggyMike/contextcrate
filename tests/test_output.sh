@@ -22,7 +22,8 @@ if ! grep -q $'\033' <<< "$colored"; then
 fi
 
 help="$(NO_COLOR=1 "$repo_dir/satchel" --help)"
-grep -q 'satchel track \[name\]' <<< "$help" || { printf 'FAIL: track missing from help\n' >&2; exit 1; }
+grep -q 'satchel track \[id\]' <<< "$help" || { printf 'FAIL: track missing from help\n' >&2; exit 1; }
 grep -q 'satchel untrack' <<< "$help" || { printf 'FAIL: untrack missing from help\n' >&2; exit 1; }
+grep -q 'satchel status \[--ignored\]' <<< "$help" || { printf 'FAIL: ignored status missing from help\n' >&2; exit 1; }
 
 printf 'ok: output color behavior\n'

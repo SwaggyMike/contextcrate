@@ -298,6 +298,7 @@ slugify() { # project dir name → safe file name
 }
 
 machine_projects_file() { printf '%s/machines/%s/projects.json' "$SYNC_DIR" "$MACHINE"; }
+repository_registry_file() { printf '%s/repositories.json' "$SYNC_DIR"; }
 
 ensure_project_registry() {
   local f; f="$(machine_projects_file)"
@@ -305,15 +306,146 @@ ensure_project_registry() {
   [ -f "$f" ] || printf '{"paths":{}}\n' > "$f"
 }
 
+ensure_repository_registry() {
+  local f; f="$(repository_registry_file)"
+  mkdir -p "$(dirname "$f")"
+  [ -f "$f" ] || printf '{"repositories":{}}\n' > "$f"
+}
+
+git_root_for_path() { git -C "$1" rev-parse --show-toplevel 2>/dev/null || true; }
 project_remote() { git -C "$1" remote get-url origin 2>/dev/null || true; }
 
-canonical_remote() { # normalize common SSH/HTTPS spellings for identity checks
-  local remote="$1"
-  case "$remote" in
-    git@*:* ) remote="${remote#git@}"; remote="${remote/:/\/}" ;;
-    *://* ) remote="${remote#*://}"; remote="${remote#*@}" ;;
+network_remote() { # true when an origin is portable across machines
+  case "$1" in
+    ssh://*|git://*|http://*|https://*|*@*:*) return 0 ;;
+    *) return 1 ;;
   esac
-  printf '%s' "${remote%.git}" | tr '[:upper:]' '[:lower:]'
+}
+
+canonical_remote() { # credential-free identity shared by common SSH/HTTPS forms
+  local remote="$1" authority path host
+  remote="${remote%%\#*}"; remote="${remote%%\?*}"; remote="${remote%/}"
+  case "$remote" in
+    *://*)
+      remote="${remote#*://}"
+      authority="${remote%%/*}"; path="${remote#*/}"
+      [ "$path" = "$remote" ] && path=""
+      authority="${authority##*@}"
+      host="${authority%%:*}"
+      authority="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')${authority#"$host"}"
+      remote="$authority${path:+/$path}"
+      ;;
+    *@*:*)
+      authority="${remote%%:*}"; path="${remote#*:}"
+      authority="${authority##*@}"
+      remote="$(printf '%s' "$authority" | tr '[:upper:]' '[:lower:]')/$path"
+      ;;
+  esac
+  remote="${remote%.git}"; remote="${remote%/}"
+  case "$remote" in
+    github.com/*|gitlab.com/*|bitbucket.org/*) remote="$(printf '%s' "$remote" | tr '[:upper:]' '[:lower:]')" ;;
+  esac
+  printf '%s' "$remote"
+}
+
+project_identity() { # project_identity <repo-root> → portable normalized origin, or empty
+  local remote; remote="$(project_remote "$1")"
+  network_remote "$remote" || return 0
+  canonical_remote "$remote"
+}
+
+repository_decision() { # repository_decision <identity> → tracked | ignored | empty
+  local f; f="$(repository_registry_file)"; [ -f "$f" ] || return 0
+  jq -r --arg r "$1" '.repositories[$r].status // empty' "$f"
+}
+
+project_for_identity() {
+  local f; f="$(repository_registry_file)"; [ -f "$f" ] || return 0
+  jq -r --arg r "$1" '.repositories[$r] | select(.status == "tracked") | .project // empty' "$f"
+}
+
+set_repository_decision() { # set_repository_decision <identity> <tracked|ignored> [project]
+  local identity="$1" status="$2" id="${3:-}" f
+  ensure_repository_registry; f="$(repository_registry_file)"
+  jq --arg r "$identity" --arg status "$status" --arg id "$id" \
+    '.repositories[$r]={status:$status,origin:$r} + (if $id == "" then {} else {project:$id} end)' \
+    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+remove_project_path() {
+  local path f; path="$(readlink -f "$1")"; ensure_project_registry; f="$(machine_projects_file)"
+  jq --arg p "$path" 'del(.paths[$p])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+map_project_path() { # map_project_path <repo-root> <project-id> [identity]
+  local path id="$2" identity="${3:-}" f
+  path="$(readlink -f "$1")"; ensure_project_registry; f="$(machine_projects_file)"
+  jq --arg p "$path" --arg id "$id" --arg identity "$identity" \
+    '.paths[$p]={status:"tracked",project:$id} + (if $identity == "" then {} else {origin:$identity} end)' \
+    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+repository_roots() { # repository_roots <mounted-root>... → every Git working tree, once
+  local root top marker repo seen=$'\n'
+  for root in "$@"; do
+    root="$(readlink -f "$root")"; [ -d "$root" ] || continue
+    top="$(git_root_for_path "$root")"
+    if [ -n "$top" ] && [[ "$seen" != *$'\n'"$top"$'\n'* ]]; then
+      seen+="$top"$'\n'; printf '%s\n' "$top"
+    fi
+    while IFS= read -r -d '' marker; do
+      repo="$(dirname "$marker")"
+      [[ "$seen" != *$'\n'"$repo"$'\n'* ]] || continue
+      seen+="$repo"$'\n'; printf '%s\n' "$repo"
+    done < <(find -P "$root" \
+      \( -type d \( -name node_modules -o -name .cache -o -name .venv -o -name venv -o -name target \) -prune \) -o \
+      \( -name .git \( -type d -o -type f \) -print0 -prune \) 2>/dev/null)
+  done
+}
+
+session_roots() {
+  local root
+  printf '%s\n' "$(readlink -f "$1")"
+  for root in "${WITH_DIRS[@]}"; do printf '%s\n' "$(readlink -f "$root")"; done
+}
+
+path_overlaps_roots() {
+  local path="$1" root
+  shift
+  for root in "$@"; do
+    case "$path" in "$root"|"$root"/*) return 0 ;; esac
+    case "$root" in "$path"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+refresh_project_paths() { # discover/match repositories inside the explicit session roots
+  [ "$HOST_MODE" -eq 0 ] || return 0
+  local launch="$1" roots=() root path id identity actual f
+  while IFS= read -r root; do roots+=("$root"); done < <(session_roots "$launch")
+  ensure_project_registry; ensure_repository_registry; f="$(machine_projects_file)"
+
+  # Remove stale cached checkouts only when they overlap this session's
+  # explicit roots. Paths elsewhere on the machine are deliberately untouched.
+  while IFS=$'\t' read -r path id; do
+    path_overlaps_roots "$path" "${roots[@]}" || continue
+    actual="$(git_root_for_path "$path")"
+    if [ "$actual" != "$path" ] || [ ! -d "$SYNC_DIR/projects/$id" ]; then remove_project_path "$path"; fi
+  done < <(jq -r '.paths | to_entries[] | "\(.key)\t\(.value.project // empty)"' "$f")
+
+  while IFS= read -r path; do
+    identity="$(project_identity "$path")"
+    if [ -n "$identity" ]; then
+      id="$(project_for_identity "$identity")"
+      if [ -n "$id" ] && [ -d "$SYNC_DIR/projects/$id" ]; then
+        map_project_path "$path" "$id" "$identity"
+      else
+        # An origin change or a global ignore invalidates a former path cache.
+        remove_project_path "$path"
+      fi
+    fi
+    # Local/no-origin repositories retain only an explicit existing mapping.
+  done < <(repository_roots "${roots[@]}")
 }
 
 project_for_path() { # project_for_path <path> → id; nearest tracked ancestor wins
@@ -332,7 +464,7 @@ project_for_path() { # project_for_path <path> → id; nearest tracked ancestor 
   done
 }
 
-path_decision() { # exact path only: tracked | rejected | empty
+path_decision() { # exact path cache only: tracked | empty
   local f; f="$(machine_projects_file)"; [ -f "$f" ] || return 0
   jq -r --arg p "$(readlink -f "$1")" '.paths[$p].status // empty' "$f"
 }
@@ -354,6 +486,17 @@ visible_projects() { # visible_projects <launch-dir> → "path<TAB>id" per visib
   done < <(jq -r '.paths | to_entries[] | select(.value.status == "tracked") | "\(.key)\t\(.value.project // empty)"' "$f")
 }
 
+visible_candidates() { # visible_candidates <launch-dir> → path<TAB>portable-origin
+  [ "$HOST_MODE" -eq 0 ] || return 0
+  local roots=() root path identity decision
+  while IFS= read -r root; do roots+=("$root"); done < <(session_roots "$1")
+  while IFS= read -r path; do
+    identity="$(project_identity "$path")"; [ -n "$identity" ] || continue
+    decision="$(repository_decision "$identity")"
+    [ -z "$decision" ] && printf '%s\t%s\n' "$path" "$identity"
+  done < <(repository_roots "${roots[@]}")
+}
+
 session_path() { # real path → the path the agent sees for it in this session
   if [ "$HOST_MODE" -eq 1 ]; then printf '/host%s' "$1"; else printf '%s' "$1"; fi
 }
@@ -367,43 +510,52 @@ unique_project_id() {
 }
 
 enroll_project() { # enroll_project <path> [id] → prints id
-  local path id remote f meta
-  path="$(readlink -f "$1")"; remote="$(project_remote "$path")"
+  local path id identity existing meta meta_remote
+  path="$(git_root_for_path "$1")"
+  [ -n "$path" ] || die "$(readlink -f "$1") is not inside a Git repository"
+  identity="$(project_identity "$path")"
   id="${2:-}"
-  if [ -z "$id" ] && [ -n "$remote" ]; then
-    for meta in "$SYNC_DIR"/projects/*/project.json; do
-      [ -f "$meta" ] || continue
-      if [ "$(canonical_remote "$(jq -r '.git_remote // empty' "$meta")")" = "$(canonical_remote "$remote")" ]; then
-        id="$(basename "$(dirname "$meta")")"; break
-      fi
-    done
+  if [ -n "$identity" ]; then
+    existing="$(project_for_identity "$identity")"
+    [ -z "$existing" ] || id="$existing"
+    # A deliberate track on pre-registry state may already have the right
+    # Project metadata in a transport-specific spelling. Reuse it instead of
+    # creating a duplicate; this is also the manual upgrade path.
+    if [ -z "$id" ]; then
+      for meta in "$SYNC_DIR"/projects/*/project.json; do
+        [ -f "$meta" ] || continue
+        meta_remote="$(jq -r '.git_remote // empty' "$meta")"
+        if [ -n "$meta_remote" ] && [ "$(canonical_remote "$meta_remote")" = "$identity" ]; then
+          id="$(basename "$(dirname "$meta")")"; break
+        fi
+      done
+    fi
   fi
   if [ -z "$id" ]; then id="$(unique_project_id "$(basename "$path")")"; fi
   id="$(slugify "$id")"
+  [ -n "$id" ] || die "project id cannot be empty"
+  if [ -f "$SYNC_DIR/projects/$id/project.json" ] && [ -n "$identity" ]; then
+    meta_remote="$(jq -r '.git_remote // empty' "$SYNC_DIR/projects/$id/project.json")"
+    if [ -n "$meta_remote" ] && [ "$(canonical_remote "$meta_remote")" != "$identity" ]; then
+      die "project '$id' belongs to $meta_remote, not $identity"
+    fi
+    jq --arg identity "$identity" '.git_remote=$identity' "$SYNC_DIR/projects/$id/project.json" \
+      > "$SYNC_DIR/projects/$id/project.json.tmp" \
+      && mv "$SYNC_DIR/projects/$id/project.json.tmp" "$SYNC_DIR/projects/$id/project.json"
+  fi
   mkdir -p "$SYNC_DIR/projects/$id/handoffs"
   touch "$SYNC_DIR/projects/$id/handoffs/.gitkeep"
   if [ ! -f "$SYNC_DIR/projects/$id/project.json" ]; then
-    jq -n --arg id "$id" --arg remote "$remote" \
-      '{id:$id} + (if $remote == "" then {} else {git_remote:$remote} end)' > "$SYNC_DIR/projects/$id/project.json"
+    jq -n --arg id "$id" --arg identity "$identity" \
+      '{id:$id} + (if $identity == "" then {} else {git_remote:$identity} end)' > "$SYNC_DIR/projects/$id/project.json"
   fi
-  ensure_project_registry; f="$(machine_projects_file)"
-  jq --arg p "$path" --arg id "$id" --arg remote "$remote" \
-    '.paths[$p]={status:"tracked",project:$id} + (if $remote == "" then {} else {git_remote:$remote} end)' \
-    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  [ -z "$identity" ] || set_repository_decision "$identity" tracked "$id"
+  map_project_path "$path" "$id" "$identity"
   printf '%s' "$id"
 }
 
-reject_project_path() {
-  local path f; path="$(readlink -f "$1")"; ensure_project_registry; f="$(machine_projects_file)"
-  jq --arg p "$path" '.paths[$p]={status:"rejected"}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-}
-
-is_utility_root() {
-  local path; path="$(readlink -f "$1")"
-  case "$path" in
-    /tmp|/var/tmp|"$(readlink -f "$HOME")"|"$(readlink -f "$HOME")"/[Dd]ownloads) return 0 ;;
-    *) return 1 ;;
-  esac
+ignore_repository() { # ignore_repository <portable-origin>
+  set_repository_decision "$1" ignored
 }
 
 git_sync() { git -C "$SYNC_DIR" "$@"; }
@@ -857,7 +1009,8 @@ Each project's retained handoffs are under /home/satchel/projects/<id>/handoffs/
 the file with the newest date in its first line is the latest). When the user
 turns to one of these projects, read its latest handoff first. At session end
 Satchel files a separate handoff for each project you worked in; work outside
-every tracked project is filed under this machine instead.
+every tracked project is filed under this machine instead. When repositories
+are nested, the nearest enclosing repository owns the work.
 EOF
       printf '\n'
     fi
@@ -874,7 +1027,7 @@ EOF
       if [ -n "$slug" ]; then
         printf 'No handoff exists for this project yet. One is written automatically when a meaningful session ends.\n'
       else
-        printf 'This directory is not a tracked project. After a meaningful session, Satchel asks whether to track it; if it stays untracked, the handoff is saved under this machine instead of a project.\n'
+        printf 'This directory is not a tracked project. After substantive work in an unknown Git repository with a portable origin, Satchel asks whether to track that repository. Ordinary directories, ignored repositories, and explicitly local work use this machine handoff instead.\n'
       fi
     fi
   } > "$target"
@@ -930,16 +1083,22 @@ file_multi_handoffs() { # file_multi_handoffs <date> <"id id ..."> <body> → pr
   # Splits an attribution-format body ('=== project: x ===' / '=== machine ===')
   # and files each well-formed note under its scope. Unknown ids are dropped:
   # the agent cannot invent projects, only file under ones on the roster.
-  local now="$1" valid=" $2 machine " body="$3" cur="" chunk="" saved=0 line
+  local now="$1" valid=" $2 machine " body="$3" cur="" chunk="" saved=0 line scope i found
+  local scopes=() chunks=()
   while IFS= read -r line; do
     case "$line" in
       '=== project: '*' ==='|'=== machine ==='|'=== end ===')
         if [ -n "$cur" ] && printf '%s' "$chunk" | grep -q '^## Goal'; then
           case "$valid" in
             *" $cur "*)
-              if [ "$cur" = machine ]; then file_handoff "" "$now" "$chunk"
-              else file_handoff "$cur" "$now" "$chunk"; fi
-              saved=$((saved + 1)) ;;
+              found=-1
+              for i in "${!scopes[@]}"; do [ "${scopes[$i]}" = "$cur" ] && { found="$i"; break; }; done
+              if [ "$found" -eq -1 ]; then
+                scopes+=("$cur"); chunks+=("$chunk")
+              else
+                chunks[$found]+="${chunks[$found]:+$'\n'}$chunk"
+              fi
+              ;;
             *) warn "handoff for unknown scope '$cur' dropped" ;;
           esac
         fi
@@ -947,7 +1106,65 @@ file_multi_handoffs() { # file_multi_handoffs <date> <"id id ..."> <body> → pr
       *) chunk+="$line"$'\n' ;;
     esac
   done <<< "$body"$'\n'"=== end ==="
+  for i in "${!scopes[@]}"; do
+    scope="${scopes[$i]}"
+    if [ "$scope" = machine ]; then file_handoff "" "$now" "${chunks[$i]}"
+    else file_handoff "$scope" "$now" "${chunks[$i]}"; fi
+    saved=$((saved + 1))
+  done
   printf '%s' "$saved"
+}
+
+# Set by resolve_candidate_handoffs for generate_handoff. Candidate arrays
+# are local to generate_handoff and visible here through Bash's dynamic scope.
+RESOLVED_HANDOFF_BODY=""
+RESOLVED_PROJECT_IDS=""
+
+resolve_candidate_handoffs() { # resolve candidate scopes after substantive work was identified
+  local body="$1" token path identity id line scope k found
+  local candidate_resolutions=()
+  RESOLVED_PROJECT_IDS=""
+  for k in "${!candidate_tokens[@]}"; do
+    token="${candidate_tokens[$k]}"; candidate_resolutions[$k]=unknown
+    if ! grep -Fqx "=== candidate: $token ===" <<< "$body"; then continue; fi
+    path="${candidate_paths[$k]}"; identity="${candidate_identities[$k]}"
+    if [ -t 0 ]; then
+      if confirm_yes "track Git repo $path ($identity) as a project?"; then
+        id="$(enroll_project "$path")"
+        candidate_resolutions[$k]="project:$id"
+        RESOLVED_PROJECT_IDS+="$id "
+        info "tracking '$id' across the caravan"
+      else
+        ignore_repository "$identity"
+        candidate_resolutions[$k]=machine
+        info "ignoring $identity across the caravan (its work stays in this machine's handoff)"
+      fi
+    else
+      # A noninteractive session cannot make a durable user choice. Preserve
+      # the work in the machine handoff and leave the repository undecided.
+      candidate_resolutions[$k]=machine
+    fi
+  done
+
+  RESOLVED_HANDOFF_BODY=""
+  while IFS= read -r line; do
+    case "$line" in
+      '=== candidate: '*' ===')
+        token="${line#=== candidate: }"; token="${token% ===}"
+        scope=unknown; found=-1
+        for k in "${!candidate_tokens[@]}"; do
+          [ "${candidate_tokens[$k]}" = "$token" ] && { found="$k"; break; }
+        done
+        [ "$found" -eq -1 ] || scope="${candidate_resolutions[$found]}"
+        case "$scope" in
+          project:*) RESOLVED_HANDOFF_BODY+="=== project: ${scope#project:} ==="$'\n' ;;
+          machine)   RESOLVED_HANDOFF_BODY+="=== machine ==="$'\n' ;;
+          *)         RESOLVED_HANDOFF_BODY+="=== unknown ==="$'\n' ;;
+        esac
+        ;;
+      *) RESOLVED_HANDOFF_BODY+="$line"$'\n' ;;
+    esac
+  done <<< "$body"
 }
 
 generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after the session ends; empty slug = machine scope
@@ -959,16 +1176,37 @@ generate_handoff() { # generate_handoff <agent> <slug> <project>  — runs after
   # project it actually happened in, no matter how the session was launched.
   local vis_paths=() vis_ids=() vp vi multi=0
   while IFS=$'\t' read -r vp vi; do vis_paths+=("$vp"); vis_ids+=("$vi"); done < <(visible_projects "$project")
+  local candidate_tokens=() candidate_paths=() candidate_identities=() candidate_rosters=()
+  local cp ci token n=0 k found
+  while IFS=$'\t' read -r cp ci; do
+    found=-1
+    for k in "${!candidate_identities[@]}"; do
+      [ "${candidate_identities[$k]}" = "$ci" ] && { found="$k"; break; }
+    done
+    if [ "$found" -eq -1 ]; then
+      n=$((n + 1)); token="candidate-$n"; candidate_tokens+=("$token")
+      candidate_paths+=("$cp"); candidate_identities+=("$ci"); candidate_rosters+=("")
+      found=$((${#candidate_tokens[@]} - 1))
+    fi
+    token="${candidate_tokens[$found]}"
+    candidate_rosters[$found]+="- unknown Git repo $token: $(session_path "$cp") ($ci)"$'\n'
+  done < <(visible_candidates "$project")
   if [ ${#vis_ids[@]} -gt 1 ]; then multi=1
   elif [ ${#vis_ids[@]} -eq 1 ] && [ "${vis_ids[0]}" != "$slug" ]; then multi=1
+  elif [ ${#candidate_tokens[@]} -gt 0 ]; then multi=1
   fi
   if [ "$multi" -eq 1 ]; then
     local roster="" k
     for k in "${!vis_ids[@]}"; do
-      roster+="- ${vis_ids[$k]}: $(session_path "${vis_paths[$k]}")"$'\n'
+      roster+="- tracked project ${vis_ids[$k]}: $(session_path "${vis_paths[$k]}")"$'\n'
     done
-    prompt="The session is ending. These tracked projects were visible in this session:
-${roster}Write a handoff note for each project you actually worked in during this conversation, so the next session on that project can continue where we left off. If you also did meaningful work outside every listed project, add one note for the machine itself. Start each note with a line of exactly '=== project: <id> ===' (or '=== machine ===' for the machine note), followed by the sections ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines per note. Skip anything you did not work in. If you did no meaningful work in any listed project or on the machine, output exactly NO_HANDOFF and nothing else. Output only the markdown, no preamble."
+    for k in "${!candidate_tokens[@]}"; do
+      roster+="${candidate_rosters[$k]}"
+    done
+    prompt="The session is ending. These tracked projects and unknown Git repositories were visible in this session:
+${roster}Write a handoff note for each tracked project you actually worked in. For each unknown Git repo, write a separate candidate note only if substantive continuation-worthy work occurred there: editing, debugging, planning, or decisions worth resuming. Merely discovering, listing, or casually reading a repo is not substantive. If meaningful work also happened outside every tracked project and candidate, add one machine note.
+
+Start tracked notes with exactly '=== project: <id> ===', candidate notes with exactly '=== candidate: <candidate-N> ===', and the machine note with exactly '=== machine ==='. Follow each delimiter with ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines per note. Skip scopes you did not substantively work in. If there is no meaningful work, output exactly NO_HANDOFF and nothing else. Output only the markdown, no preamble."
   else
     scope=machine; [ -n "$slug" ] && scope=project
     prompt="The session is ending. Based on this conversation, write a handoff note so the next session on this $scope can continue where we left off. Use exactly these sections: ## Goal, ## Done, ## In flight, ## Next steps, ## Gotchas. Under 30 lines total. If you did no meaningful work to hand off, output exactly NO_HANDOFF and nothing else. Output only the markdown, no preamble."
@@ -1060,6 +1298,10 @@ ${roster}Write a handoff note for each project you actually worked in during thi
   if [ "$multi" -eq 1 ]; then
     local ids="" saved
     for vi in "${vis_ids[@]}"; do ids+="$vi "; done
+    if [ ${#candidate_tokens[@]} -gt 0 ]; then
+      resolve_candidate_handoffs "$body"
+      body="$RESOLVED_HANDOFF_BODY"; ids+="$RESOLVED_PROJECT_IDS"
+    fi
     saved="$(file_multi_handoffs "$now" "$ids" "$body")"
     # No delimiters parsed: keep the content anyway, filed under the launch
     # scope exactly like a classic single-scope session.
@@ -1591,7 +1833,7 @@ cmd_session() {
   session_mount_guard "$agent"
   with_dirs_guard
   ensure_image
-  local project="$PWD" slug home decision
+  local project="$PWD" slug home
   home="$HOMES_DIR/$agent"
   mkdir -p "$home"
   fix_home_ownership "$home"
@@ -1602,6 +1844,7 @@ cmd_session() {
   quiet_pull
   prune_all_handoffs
   update_check
+  refresh_project_paths "$project"
   slug="$(project_for_path "$project")"
 
   # Authentication normally happens inside an agent's first session. On the
@@ -1656,24 +1899,13 @@ cmd_session() {
   if sync_ready; then
     if [ -z "${SATCHEL_NO_HANDOFF:-}" ] \
        && [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -newer "$stamp" -print -quit 2>/dev/null)" ]; then
-      if [ -z "$slug" ]; then
-        decision="$(path_decision "$project")"
-        if [ "$decision" != rejected ]; then
-          if is_utility_root "$project"; then
-            reject_project_path "$project"
-            info "not tracking utility directory $project (child directories remain eligible)"
-          elif confirm_yes "track $project as a project and save its handoffs?"; then
-            slug="$(enroll_project "$project")"
-            info "tracking '$slug' on $MACHINE"
-          else
-            reject_project_path "$project"
-            info "not tracking $project (remembered for this machine)"
-          fi
-        fi
-      fi
-      # No project (declined, utility root, a Host Session in /root): the
-      # handoff still gets written, scoped to this machine.
+      # Re-scan because a session may have cloned or initialized repositories.
+      # Unknown repos are offered only if handoff analysis identifies
+      # substantive work in them; ordinary directories never prompt.
+      refresh_project_paths "$project"
+      slug="$(project_for_path "$project")"
       generate_handoff "$agent" "$slug" "$project"
+      slug="$(project_for_path "$project")"
     fi
     # Push regardless of the handoff: a session may have installed skills or
     # edited synced files even without a handoff to write.
@@ -1811,6 +2043,7 @@ cmd_init() {
   if [ -n "$url" ]; then
     mkdir -p "$SYNC_DIR/machines/$name" "$SYNC_DIR/projects" "$SYNC_DIR/skills/shared"
     [ -f "$SYNC_DIR/machines/$name/projects.json" ] || printf '{"paths":{}}\n' > "$SYNC_DIR/machines/$name/projects.json"
+    [ -f "$SYNC_DIR/repositories.json" ] || printf '{"repositories":{}}\n' > "$SYNC_DIR/repositories.json"
     touch "$SYNC_DIR/skills/shared/.gitkeep"
     [ -f "$SYNC_DIR/profile.md" ] || printf '# Profile\n' > "$SYNC_DIR/profile.md"
     [ -f "$SYNC_DIR/preferences.md" ] || printf '# Preferences\n' > "$SYNC_DIR/preferences.md"
@@ -1978,6 +2211,14 @@ cmd_retire() {
 # ----------------------------------------------------------------- status
 
 cmd_status() {
+  local show_ignored=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ignored) show_ignored=1 ;;
+      *) die "unknown status option '$1'" ;;
+    esac
+    shift
+  done
   out_header "Satchel $SATCHEL_VERSION on $MACHINE"
   local e img="not built"
   e="$(engine 2>/dev/null || true)"
@@ -2018,15 +2259,23 @@ cmd_status() {
       printf '  %s%s\n' "$(basename "$m")" "$([ "$mh" -gt 0 ] && printf ', %s machine handoff(s)' "$mh")"
     done
     printf '\n'; out_section 'Projects:'
-    local p f date count
+    local p f date count origin
     for p in "$SYNC_DIR"/projects/*/; do
       [ -d "$p" ] || continue
       f="$(latest_handoff "$(basename "$p")")"
       date=""; count=0
       [ -n "$f" ] && date="$(sed -n "1s/.*date=\([^ ]*\).*/\1/p" "$f")"
       for f in "$p"handoffs/*.md; do [ -f "$f" ] && count=$((count + 1)); done
-      printf '  %-28s %s handoff(s)%s\n' "$(basename "$p")" "$count" "${date:+, latest $date}"
+      origin="$(jq -r '.git_remote // "local or no origin"' "$p/project.json" 2>/dev/null || printf 'local or no origin')"
+      printf '  %-22s %-38s %s handoff(s)%s\n' "$(basename "$p")" "$origin" "$count" "${date:+, latest $date}"
     done
+    local ignored=0 registry
+    registry="$(repository_registry_file)"
+    [ -f "$registry" ] && ignored="$(jq '[.repositories[] | select(.status == "ignored")] | length' "$registry")"
+    printf '  ignored repositories: %s%s\n' "$ignored" "$([ "$show_ignored" -eq 0 ] && [ "$ignored" -gt 0 ] && printf ' (use satchel status --ignored to list)')"
+    if [ "$show_ignored" -eq 1 ] && [ "$ignored" -gt 0 ]; then
+      jq -r '.repositories | to_entries[] | select(.value.status == "ignored") | "    " + .key' "$registry"
+    fi
     local names; names="$(mcp_names | paste -sd, - | sed 's/,/, /g')"
     printf '\n%sMCP servers:%s %s\n' "$OUT_BOLD$OUT_BLUE" "$OUT_RESET" "${names:-(none)}"
     out_section 'Skills:'
@@ -2235,13 +2484,13 @@ sessions
                              (repeatable - for repos that influence each other)
                              flags work before or after the agent name:
                              'satchel --host claude' == 'claude --host'
-  satchel track [name]         track the current directory as a project
-  satchel untrack              stop tracking the current directory on this machine
+  satchel track [id]           track the enclosing Git repo as a project
+  satchel untrack [id]         globally ignore a project; id works without a checkout
 
 caravan
   satchel init                 name this machine, connect the Sync Repo
   satchel sync                 commit, pull, push the Sync Repo
-  satchel status               caravan roster, handoffs, MCP servers, skills
+  satchel status [--ignored]   caravan roster, projects, handoffs, MCP, skills
   satchel key                  show this machine's SSH public key (makes one if needed)
   satchel retire [machine]     remove a machine from the caravan (picks from a list)
   satchel doctor               check this machine's whole setup and say what's wrong
@@ -2266,16 +2515,46 @@ EOF
 
 cmd_track() {
   sync_ready || die "sync is not set up — run 'satchel init' first"
+  [ $# -le 1 ] || die "usage: satchel track [project-id]"
   local id; id="$(enroll_project "$PWD" "${1:-}")"
-  quiet_push "track project $id on $MACHINE"
-  info "tracking '$id' at $PWD"
+  quiet_push "track project $id"
+  info "tracking '$id' at $(git_root_for_path "$PWD")"
+}
+
+untrack_project() { # untrack_project <project-id> [known-origin]
+  local id="$1" identity="${2:-}" meta dir f
+  [ "$id" = "$(slugify "$id")" ] || die "invalid project id '$id'"
+  dir="$SYNC_DIR/projects/$id"
+  [ -d "$dir" ] || die "unknown project id '$id' (run satchel status)"
+  meta="$dir/project.json"
+  [ -n "$identity" ] || identity="$(jq -r '.git_remote // empty' "$meta" 2>/dev/null || true)"
+  [ -z "$identity" ] || ignore_repository "$identity"
+
+  # A Project is global: remove every checkout cache, then remove its active
+  # handoffs. Sync Repo history remains the recovery path.
+  for f in "$SYNC_DIR"/machines/*/projects.json; do
+    [ -f "$f" ] || continue
+    jq --arg id "$id" '.paths |= with_entries(select(.value.project != $id))' \
+      "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  done
+  rm -rf -- "$dir"
 }
 
 cmd_untrack() {
   sync_ready || die "sync is not set up — run 'satchel init' first"
-  reject_project_path "$PWD"
-  quiet_push "untrack path on $MACHINE"
-  info "not tracking $PWD on $MACHINE (child directories remain eligible)"
+  [ $# -le 1 ] || die "usage: satchel untrack [project-id]"
+  local id="${1:-}" root identity=""
+  if [ -z "$id" ]; then
+    root="$(git_root_for_path "$PWD")"
+    [ -n "$root" ] || die "$PWD is not inside a Git repository; pass a project id"
+    identity="$(project_identity "$root")"
+    [ -z "$identity" ] || id="$(project_for_identity "$identity")"
+    [ -n "$id" ] || id="$(project_for_path "$root")"
+  fi
+  [ -n "$id" ] || die "this repository is not a tracked project"
+  untrack_project "$id" "$identity"
+  quiet_push "ignore project $id"
+  info "project '$id' is ignored across the caravan; active handoffs removed"
 }
 
 # ------------------------------------------------------------------- main

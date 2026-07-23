@@ -13,15 +13,15 @@ A tiny wrapper command named `claude` or `codex` on the host PATH that execs `sa
 _Avoid_: alias, symlink
 
 **Session**:
-A single run of an agent CLI inside a throwaway Docker container, scoped to one directory (plus any extra directories named with repeatable `--with` flags, for work that spans repos). The container is deleted when the session ends. A directory becomes a Project only after the user opts in; work is attributed to whichever tracked Project's directory it happened in, regardless of where the session was launched.
+A single run of an agent CLI inside a throwaway Docker container, scoped to one directory (plus any extra directories named with repeatable `--with` flags, for work that spans repos). The container is deleted when the session ends. Work is attributed to the nearest enclosing tracked Project, regardless of where the session was launched.
 _Avoid_: workspace, environment
 
 **Project**:
-A directory the user explicitly chose to track. Project identity and handoffs are global across the caravan; each machine keeps only its local path mapping. A Git remote links checkouts automatically when present, but Git is not required.
-_Avoid_: every working directory, repository (not every repository is tracked)
+A Git repository the user explicitly chose to track. Network-origin identity, the tracked/ignored decision, and handoffs are global across the caravan; checkout paths are machine-local caches discovered beneath the session's explicit mount roots. Unknown repos prompt only after substantive work. `satchel track` can explicitly link a repo with a local or missing origin, but ordinary directories are never Projects.
+_Avoid_: every working directory, every repository (ignored and unknown repos are not Projects)
 
 **Sync Repo**:
-The user-owned private git repository (cloned at `~/.satchel/sync/`) that carries handoffs, tool settings, the MCP Registry, and the Skill Library between machines. Agent login credentials and transcripts never enter it.
+The user-owned private git repository (cloned at `~/.satchel/sync/`) that carries handoffs, tool settings, the repository registry, the MCP Registry, and the Skill Library between machines. Its origin may be a hosted remote, an SSH bare repo, or a local bare repo on a consistently available NFS share. Agent login credentials and transcripts never enter it.
 _Avoid_: cloud, backend, server
 
 **MCP Registry**:

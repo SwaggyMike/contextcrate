@@ -14,12 +14,20 @@ printf 'MACHINE=testbox\nSYNC_URL=test\n' > "$SATCHEL_DIR/config"
 source <(sed '$d' "$repo_dir/satchel")
 load_config
 
+# Projects are Git repositories. Portable origins drive global decisions;
+# local/no-origin repositories remain available through explicit tracking.
+git init -q -b main "$tmp/work/app"
+git -C "$tmp/work/app" remote add origin git@github.com:Example/App.git
 id="$(enroll_project "$tmp/work/app" sample)"
 [ "$id" = sample ]
 [ "$(project_for_path "$tmp/work/app/src")" = sample ]
 [ "$(jq -r '.paths | to_entries[0].value.status' "$(machine_projects_file)")" = tracked ]
 [ -f "$SATCHEL_DIR/sync/projects/sample/project.json" ]
+[ "$(repository_decision github.com/example/app)" = tracked ]
+[ "$(project_for_identity github.com/example/app)" = sample ]
 [ "$(canonical_remote 'git@github.com:Example/Repo.git')" = "$(canonical_remote 'https://github.com/example/repo')" ]
+[ "$(canonical_remote 'https://token@example.com/Owner/Repo.git?x=secret')" = example.com/Owner/Repo ]
+! grep -q token "$(repository_registry_file)"
 printf '<!-- satchel-handoff project=sample machine=a date=2026-01-01T00:00:00Z -->\n' \
   > "$SATCHEL_DIR/sync/projects/sample/handoffs/old.md"
 printf '<!-- satchel-handoff project=sample machine=b date=2026-02-01T00:00:00Z -->\n' \
@@ -93,29 +101,81 @@ UNSAFE_HOME=1
 (cd "$HOME" && session_mount_guard claude </dev/null)
 UNSAFE_HOME=0
 
-reject_project_path "$tmp/work/downloads"
-[ "$(path_decision "$tmp/work/downloads")" = rejected ]
-[ -z "$(path_decision "$tmp/work/downloads/important")" ]
-[ -z "$(project_for_path "$tmp/work/downloads/important")" ]
-is_utility_root "$HOME"
-! is_utility_root "$tmp/work/downloads/important"
+# Ordinary directories never become Projects, even explicitly. A local Git
+# repo can be explicitly tracked but is not an automatic prompt candidate.
+! (enroll_project "$tmp/work/downloads" nope 2>/dev/null)
+git init -q -b main "$tmp/work/local"
+local_id="$(enroll_project "$tmp/work/local" local-only)"
+[ "$local_id" = local-only ]
+[ -z "$(project_identity "$tmp/work/local")" ]
+[ -z "$(visible_candidates "$tmp/work/local")" ]
 
-# Path-based attribution: visible_projects enumerates roster entries under
-# the mounts, at any depth; a Host Session sees every tracked project.
+# Discovery recursively recognizes globally tracked origins without a prior
+# path mapping on this machine, and ignored/unknown origins stay distinct.
 mkdir -p "$tmp/work/nested/app2"
+git init -q -b main "$tmp/work/nested/app2"
+git -C "$tmp/work/nested/app2" remote add origin https://github.com/example/app2.git
 id2="$(enroll_project "$tmp/work/nested/app2" sample2)"
 [ "$id2" = sample2 ]
+remove_project_path "$tmp/work/nested/app2"
+[ -z "$(project_for_path "$tmp/work/nested/app2")" ]
+refresh_project_paths "$tmp/work"
+[ "$(project_for_path "$tmp/work/nested/app2")" = sample2 ]
+
+mkdir -p "$tmp/work/nested/junk" "$tmp/work/newrepo"
+git init -q -b main "$tmp/work/nested/junk"
+git -C "$tmp/work/nested/junk" remote add origin git@github.com:example/junk.git
+ignore_repository github.com/example/junk
+refresh_project_paths "$tmp/work"
+[ "$(repository_decision github.com/example/junk)" = ignored ]
+[ -z "$(project_for_path "$tmp/work/nested/junk")" ]
+! visible_candidates "$tmp/work" | grep -q junk
+
+git init -q -b main "$tmp/work/newrepo"
+git -C "$tmp/work/newrepo" remote add origin https://user:password@example.com/team/newrepo.git
+candidate="$(visible_candidates "$tmp/work")"
+[ "$candidate" = "$(printf '%s\texample.com/team/newrepo' "$(readlink -f "$tmp/work/newrepo")")" ]
+! grep -q 'user\|password' <<< "$candidate"
+mkdir -p "$tmp/work/newrepo-copy"
+git init -q -b main "$tmp/work/newrepo-copy"
+git -C "$tmp/work/newrepo-copy" remote add origin git@example.com:team/newrepo.git
+[ "$(visible_candidates "$tmp/work" | grep -c $'\texample.com/team/newrepo$')" = 2 ]
+mkdir -p "$tmp/outside-repo"
+git init -q -b main "$tmp/outside-repo"
+git -C "$tmp/outside-repo" remote add origin https://example.com/outside/repo.git
+ln -s "$tmp/outside-repo" "$tmp/work/outside-link"
+! visible_candidates "$tmp/work" | grep -q 'example.com/outside/repo'
+
+# An origin change invalidates the checkout cache and requires a new decision.
+git -C "$tmp/work/nested/app2" remote set-url origin https://github.com/example/app2-renamed.git
+refresh_project_paths "$tmp/work"
+[ -z "$(project_for_path "$tmp/work/nested/app2")" ]
+git -C "$tmp/work/nested/app2" remote set-url origin https://github.com/example/app2.git
+refresh_project_paths "$tmp/work"
+[ "$(project_for_path "$tmp/work/nested/app2")" = sample2 ]
+
+# Path-based attribution enumerates roster entries under the mounts, at any
+# depth; a Host Session uses known paths without recursively scanning the host.
 HOST_MODE=0 WITH_DIRS=()
-[ "$(visible_projects "$tmp/work" | wc -l)" = 2 ]
+[ "$(visible_projects "$tmp/work" | wc -l)" = 3 ]
 [ "$(visible_projects "$tmp/work/app")" = "$(printf '%s\tsample' "$(readlink -f "$tmp/work/app")")" ]
 WITH_DIRS=("$(readlink -f "$tmp/work/nested/app2")")
 [ "$(visible_projects "$tmp/work/app" | wc -l)" = 2 ]
 WITH_DIRS=()
 HOST_MODE=1
-[ "$(visible_projects "$tmp/work/app" | wc -l)" = 2 ]
+[ "$(visible_projects "$tmp/work/app" | wc -l)" = 3 ]
 [ "$(session_path /a/b)" = /host/a/b ]
 HOST_MODE=0
 [ "$(session_path /a/b)" = /a/b ]
+
+# Multiple checkouts with one origin resolve to one Project ID while retaining
+# both visible paths for attribution.
+mkdir -p "$tmp/work/app-copy"
+git init -q -b main "$tmp/work/app-copy"
+git -C "$tmp/work/app-copy" remote add origin https://github.com/example/app.git
+refresh_project_paths "$tmp/work"
+[ "$(project_for_path "$tmp/work/app-copy")" = sample ]
+[ "$(visible_projects "$tmp/work" | awk -F '\t' '$2 == "sample" {n++} END {print n}')" = 2 ]
 
 # Sessions get the projects tree read-only, and a multi-project launch gets
 # a table of contents instead of inlined handoffs.
@@ -142,6 +202,23 @@ grep -q '^## Goal' "$SATCHEL_DIR/sync/machines/testbox/handoffs/2026-03-01T00-00
 [ ! -d "$SATCHEL_DIR/sync/projects/intruder" ]
 [ "$(file_multi_handoffs '2026-03-02T00:00:00Z' 'sample ' $'## Goal\nplain' 2>/dev/null)" = 0 ]
 
+# Candidate scopes trigger decisions only when the handoff model emits them.
+# In a noninteractive run, preserve the work as one machine handoff and leave
+# the repository undecided. Multiple machine chunks are combined, not lost to
+# same-timestamp overwrites.
+candidate_tokens=(candidate-1)
+candidate_paths=("$tmp/work/newrepo")
+candidate_identities=(example.com/team/newrepo)
+cbody=$'=== candidate: candidate-1 ===\n## Goal\nCandidate work\n=== machine ===\n## Goal\nOther work'
+resolve_candidate_handoffs "$cbody"
+grep -q '^=== machine ===' <<< "$RESOLVED_HANDOFF_BODY"
+[ -z "$RESOLVED_PROJECT_IDS" ]
+[ -z "$(repository_decision example.com/team/newrepo)" ]
+[ "$(file_multi_handoffs '2026-03-03T00:00:00Z' 'sample ' "$RESOLVED_HANDOFF_BODY" 2>/dev/null)" = 1 ]
+machine_combined="$SATCHEL_DIR/sync/machines/testbox/handoffs/2026-03-03T00-00-00Z.md"
+grep -q 'Candidate work' "$machine_combined"
+grep -q 'Other work' "$machine_combined"
+
 # Handoff directories are bounded continuation state, not an incident archive.
 mkdir -p "$SATCHEL_DIR/sync/projects/retained/handoffs"
 for i in $(seq -w 1 12); do
@@ -151,4 +228,48 @@ done
 [ ! -f "$SATCHEL_DIR/sync/projects/retained/handoffs/2026-04-01T00-00-00Z--testbox.md" ]
 [ -f "$SATCHEL_DIR/sync/projects/retained/handoffs/2026-04-12T00-00-00Z--testbox.md" ]
 
-printf 'ok: project enrollment and machine path decisions\n'
+# Global untracking ignores a portable origin, clears every machine's path
+# cache, and removes active handoffs/project metadata.
+mkdir -p "$tmp/work/remove-me"
+git init -q -b main "$tmp/work/remove-me"
+git -C "$tmp/work/remove-me" remote add origin https://github.com/example/remove-me.git
+remove_id="$(enroll_project "$tmp/work/remove-me" remove-me)"
+mkdir -p "$SATCHEL_DIR/sync/machines/other"
+printf '{"paths":{"/other/remove-me":{"status":"tracked","project":"remove-me"}}}\n' \
+  > "$SATCHEL_DIR/sync/machines/other/projects.json"
+untrack_project "$remove_id"
+[ "$(repository_decision github.com/example/remove-me)" = ignored ]
+[ ! -d "$SATCHEL_DIR/sync/projects/remove-me" ]
+[ -z "$(project_for_path "$tmp/work/remove-me")" ]
+[ "$(jq '.paths | length' "$SATCHEL_DIR/sync/machines/other/projects.json")" = 0 ]
+
+# Explicit tracking is the manual private-repo upgrade path: reuse an existing
+# pre-registry Project whose remote differs only by transport spelling.
+mkdir -p "$tmp/work/legacy" "$SATCHEL_DIR/sync/projects/legacy/handoffs"
+git init -q -b main "$tmp/work/legacy"
+git -C "$tmp/work/legacy" remote add origin https://github.com/Example/Legacy.git
+printf '{"id":"legacy","git_remote":"git@github.com:Example/Legacy.git"}\n' \
+  > "$SATCHEL_DIR/sync/projects/legacy/project.json"
+legacy_id="$(enroll_project "$tmp/work/legacy")"
+[ "$legacy_id" = legacy ]
+[ "$(project_for_identity github.com/example/legacy)" = legacy ]
+[ "$(jq -r '.git_remote' "$SATCHEL_DIR/sync/projects/legacy/project.json")" = github.com/example/legacy ]
+[ ! -d "$SATCHEL_DIR/sync/projects/legacy-2" ]
+
+# Status keeps active Project IDs/origins visible but collapses ignored repos
+# unless the explicit detail flag is requested.
+status="$(cmd_status 2>/dev/null)"
+grep -q 'sample.*github.com/example/app' <<< "$status"
+grep -q 'ignored repositories: 2.*status --ignored' <<< "$status"
+! grep -q 'github.com/example/junk' <<< "$status"
+ignored_status="$(cmd_status --ignored 2>/dev/null)"
+grep -q 'github.com/example/junk' <<< "$ignored_status"
+grep -q 'github.com/example/remove-me' <<< "$ignored_status"
+
+# Explicit tracking reverses a global ignore.
+junk_id="$(enroll_project "$tmp/work/nested/junk" junk)"
+[ "$junk_id" = junk ]
+[ "$(repository_decision github.com/example/junk)" = tracked ]
+[ "$(project_for_path "$tmp/work/nested/junk")" = junk ]
+
+printf 'ok: global project identity, discovery, and handoffs\n'
