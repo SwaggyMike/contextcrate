@@ -48,6 +48,21 @@ shim_status() { # shim_status <agent> → prints "linked <path>" or "not linked"
   fi
 }
 
+agent_launch_command() { # agent_launch_command <agent> → shim shorthand or explicit Satchel command
+  local agent="$1" bin shim self resolved=""
+  bin="$(shim_dir)"
+  shim="$bin/$agent"
+  self="$(readlink -f "$0")"
+  resolved="$(command -v "$agent" 2>/dev/null || true)"
+  if shim_owned_by_install "$shim" "$agent" "$self" \
+    && [ -n "$resolved" ] \
+    && [ "$(readlink -f "$resolved" 2>/dev/null || true)" = "$(readlink -f "$shim")" ]; then
+    printf '%s' "$agent"
+  else
+    printf 'satchel %s' "$agent"
+  fi
+}
+
 cmd_link() {
   local agents=("$@")
   [ "${#agents[@]}" -eq 0 ] && agents=(claude codex)

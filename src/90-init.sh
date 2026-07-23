@@ -142,5 +142,5 @@ cmd_init() {
 
   cmd_image
   [ "$was_initialized" -eq 0 ] || offer_baseline_refresh
-  success "done. try: cd <a project> && satchel claude"
+  success "done. try: cd <a project> && $(agent_launch_command claude)"
 }

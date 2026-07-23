@@ -190,6 +190,10 @@ for agent in claude codex; do
   [ -x "$link_bin/$agent" ] || fail "'$agent' shim was not created by link" "$output"
   grep -q "satchel shim" "$link_bin/$agent" || fail "'$agent' shim missing marker after link"
 done
+launch_command="$(HOME="$test_home" PATH="$link_bin:$PATH" \
+  bash -c 'source <(head -n -1 "$0"); agent_launch_command claude' "$link_bin/satchel")"
+[ "$launch_command" = claude ] \
+  || fail "active owned shim did not produce the short launch command" "$launch_command"
 printf 'ok: satchel link creates shims\n'
 
 # link again is a no-op
@@ -209,6 +213,10 @@ set -e
 for agent in claude codex; do
   [ ! -e "$link_bin/$agent" ] || fail "'$agent' shim still exists after unlink" "$output"
 done
+launch_command="$(HOME="$test_home" PATH="$link_bin:$PATH" \
+  bash -c 'source <(head -n -1 "$0"); agent_launch_command claude' "$link_bin/satchel")"
+[ "$launch_command" = 'satchel claude' ] \
+  || fail "missing shim did not produce the explicit launch command" "$launch_command"
 printf 'ok: satchel unlink removes shims\n'
 
 # unlink again is a no-op
