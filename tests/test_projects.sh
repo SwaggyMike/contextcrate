@@ -121,7 +121,10 @@ HOST_MODE=0
 # a table of contents instead of inlined handoffs.
 compose_run_args claude "$tmp/home_c" "$tmp/work"
 [[ " ${RUN_ARGS[*]} " == *"/projects:/home/satchel/projects:ro"* ]]
+# Sibling machines' knowledge rides along read-only, and the preamble says so.
+[[ " ${RUN_ARGS[*]} " == *"/machines:/home/satchel/machines:ro"* ]]
 write_memory_file claude "$tmp/home_c" "" "$tmp/work" 2>/dev/null
+grep -q '/home/satchel/machines/' "$tmp/home_c/.claude/CLAUDE.md"
 grep -q 'Tracked projects in this session' "$tmp/home_c/.claude/CLAUDE.md"
 grep -q 'sample2' "$tmp/home_c/.claude/CLAUDE.md"
 grep -q 'unreachable here' "$tmp/home_c/.claude/CLAUDE.md"

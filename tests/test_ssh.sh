@@ -59,4 +59,19 @@ grep -q 'no ssh-agent answered' <(SSH_STATE=dead ssh_preflight 2>&1)
 [ -z "$(SSH_STATE=ready ssh_preflight 2>&1)" ]
 [ -z "$(SSH_STATE=off ssh_preflight 2>&1)" ]
 
+# SSH-home fix: ssh resolves ~ via /etc/passwd, not $HOME, so the image must
+# align the passwd homes of node and root with the mounted agent home.
+grep -q 'usermod -d /home/satchel node' "$repo_dir/satchel"
+grep -q 'usermod -d /home/satchel root' "$repo_dir/satchel"
+
+# Custom SATCHEL_UID under rootless podman: keep-id's invented passwd entry
+# must point home at /home/satchel; no such flag reaches other engines.
+podman_rootless() { return 0; }
+SSH_STATE=ready compose_run_args claude "$tmp/home_c" "$tmp/work/app"
+[[ " ${RUN_ARGS[*]} " == *"--passwd-entry"* ]]
+[[ " ${RUN_ARGS[*]} " == *":/home/satchel:"* ]]
+podman_rootless() { return 1; }
+SSH_STATE=ready compose_run_args claude "$tmp/home_c" "$tmp/work/app"
+[[ " ${RUN_ARGS[*]} " != *"--passwd-entry"* ]]
+
 printf 'ok: ssh-agent preflight states and session guidance\n'

@@ -449,6 +449,11 @@ RUN apt-get update \
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
 ENV HOME=/home/satchel
 RUN mkdir -p /home/satchel && chmod 0777 /home/satchel
+# OpenSSH resolves ~ through /etc/passwd, not $HOME: without this, sessions
+# read/write .ssh under /home/node or /root — ephemeral container paths — so
+# known_hosts never persists and root Host Sessions can hit dangling host
+# symlinks. Align the passwd homes with the mounted agent home.
+RUN usermod -d /home/satchel node && usermod -d /home/satchel root
 WORKDIR /home/satchel
 DOCKERFILE
   rm -rf "$ctx"
@@ -797,6 +802,11 @@ only preserve exact wording when they explicitly ask for it. You may save a
 clearly qualifying fact without being asked, but default to saving nothing
 when uncertain. Mention any machine-knowledge changes in your final response.
 Paths under /host apply only in Host Sessions.
+
+Other machines' notes, guides, and inventories are readable under
+/home/satchel/machines/<machine>/ — consult them when work references
+another machine. They are read-only here; only a session on that machine
+can change them.
 EOF
       local inventory="$SYNC_DIR/machines/$MACHINE/inventory.md" generated="" guide title
       if [ -s "$inventory" ]; then
@@ -1282,7 +1292,10 @@ compose_baseline_run_args() { # compose_baseline_run_args <agent> <home>
   RUN_ARGS+=(-v "/:/host:ro" -w /home/satchel)
   RUN_ARGS+=(--user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
   if selinux_active; then RUN_ARGS+=(--security-opt label=disable); fi
-  if podman_rootless; then RUN_ARGS+=(--userns=keep-id); fi
+  # keep-id invents a passwd entry when SATCHEL_UID is absent from the image
+  # (custom UIDs); template its home to the agent home so ssh agrees with
+  # $HOME there too. Ignored when the UID already exists in the image.
+  if podman_rootless; then RUN_ARGS+=(--userns=keep-id --passwd-entry '$USERNAME:*:$UID:$GID::/home/satchel:/bin/bash'); fi
 }
 
 prepare_baseline_home() { # repair files a previous root Host Session may have left behind
@@ -1444,6 +1457,10 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     # satchel's job at session end.
     mkdir -p "$SYNC_DIR/projects"
     RUN_ARGS+=(-v "$SYNC_DIR/projects:/home/satchel/projects:ro")
+    # Sibling machines' knowledge, read-only: "the fix for X lives in
+    # apollo's notes" is a legitimate cross-machine read. Writes still go
+    # only through this machine's own /home/satchel/machine mount.
+    RUN_ARGS+=(-v "$SYNC_DIR/machines:/home/satchel/machines:ro")
   fi
   if [ "$agent" = claude ] && sync_ready; then
     mkdir -p "$SYNC_DIR/skills/shared" "$home/.claude"
@@ -1482,7 +1499,10 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
   else
     RUN_ARGS+=(--init --user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
     if selinux_active; then RUN_ARGS+=(--security-opt label=disable); fi
-    if podman_rootless; then RUN_ARGS+=(--userns=keep-id); fi
+    # keep-id invents a passwd entry when SATCHEL_UID is absent from the image
+  # (custom UIDs); template its home to the agent home so ssh agrees with
+  # $HOME there too. Ignored when the UID already exists in the image.
+  if podman_rootless; then RUN_ARGS+=(--userns=keep-id --passwd-entry '$USERNAME:*:$UID:$GID::/home/satchel:/bin/bash'); fi
   fi
   return 0
 }
