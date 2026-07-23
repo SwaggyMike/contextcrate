@@ -214,9 +214,8 @@ grep -q 'removed container image' <<< "$output" \
 
 printf 'ok: satchel uninstall preserves local state\n'
 
-# Legacy shims used `exec satchel <agent>` without the marker and could live
-# one directory above a self-contained install. Uninstall must remove those
-# exact wrappers while preserving unrelated native executables.
+# Legacy shims and shims owned by another installation are ambiguous. An
+# uninstall must leave both untouched instead of breaking another command.
 legacy_home="$test_home/legacy-home"
 legacy_path="$legacy_home/.local/bin"
 legacy_install="$legacy_path/satchel"
@@ -225,8 +224,9 @@ cp "$repo_dir/satchel" "$legacy_install/satchel"
 chmod 755 "$legacy_install/satchel"
 printf 'MACHINE=legacy-uninstall\nSYNC_URL=\n' > "$legacy_install/.satchel/config"
 printf '%s\n' "$legacy_install/satchel" > "$legacy_install/.satchel/install-path"
-printf '#!/usr/bin/env bash\nexec satchel codex "$@"\n' > "$legacy_path/codex"
-printf '#!/usr/bin/env bash\necho native claude\n' > "$legacy_path/claude"
+printf '#!/usr/bin/env bash\nexec satchel claude "$@"\n' > "$legacy_path/claude"
+printf '#!/usr/bin/env bash\n# satchel shim\nexec %q codex "$@"\n' \
+  "$legacy_home/other-install/satchel" > "$legacy_path/codex"
 chmod 755 "$legacy_path/codex" "$legacy_path/claude"
 
 set +e
@@ -234,14 +234,16 @@ output="$(HOME="$legacy_home" "$legacy_install/satchel" uninstall --yes 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "legacy-layout uninstall failed (rc=$rc)" "$output"
-[ ! -e "$legacy_path/codex" ] || fail "uninstall left the legacy codex shim behind" "$output"
-[ -x "$legacy_path/claude" ] || fail "uninstall removed an unrelated native claude executable" "$output"
+[ -x "$legacy_path/codex" ] || fail "uninstall removed another installation's codex shim" "$output"
+[ -x "$legacy_path/claude" ] || fail "uninstall removed an ambiguous legacy claude shim" "$output"
 [ ! -e "$legacy_install/satchel" ] || fail "legacy-layout uninstall left its command behind" "$output"
 [ -d "$legacy_install/.satchel" ] || fail "legacy-layout uninstall did not preserve state" "$output"
-grep -q "removed shim $legacy_path/codex" <<< "$output" \
-  || fail "legacy shim cleanup was not reported" "$output"
+grep -q "left ambiguous Satchel shim $legacy_path/codex" <<< "$output" \
+  || fail "other-installation shim preservation was not reported" "$output"
+grep -q "left ambiguous Satchel shim $legacy_path/claude" <<< "$output" \
+  || fail "legacy shim preservation was not reported" "$output"
 
-printf 'ok: satchel uninstall removes legacy shims across known command paths\n'
+printf 'ok: satchel uninstall preserves shims it cannot prove it owns\n'
 
 # A plain uninstall remains confirmation-gated.
 cancel_bin="$test_home/uninstall-cancel"

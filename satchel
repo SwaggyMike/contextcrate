@@ -131,6 +131,17 @@ is_satchel_shim() {
     || grep -qsE '^exec[[:space:]]+satchel[[:space:]]+(claude|codex)([[:space:]]|$)' "$1"
 }
 
+# A generic Satchel marker is enough for status/install replacement, but not
+# for deletion: another installation may own that shim. Current shims contain
+# an exact, shell-escaped absolute command, so compare against the line this
+# installation would generate rather than evaluating file content.
+shim_owned_by_install() { # shim_owned_by_install <path> <agent> <satchel-path>
+  local path="$1" agent="$2" self="$3" expected
+  [ -f "$path" ] || return 1
+  printf -v expected 'exec %q %s "$@"' "$self" "$agent"
+  grep -Fqxs "$expected" "$path"
+}
+
 shim_status() { # shim_status <agent> → prints "linked <path>" or "not linked"
   local bin agent="$1" shim
   bin="$(shim_dir)"
@@ -172,16 +183,21 @@ cmd_link() {
 cmd_unlink() {
   local agents=("$@")
   [ "${#agents[@]}" -eq 0 ] && agents=(claude codex)
-  local bin agent shim
+  local bin self agent shim
   bin="$(shim_dir)"
+  self="$(readlink -f "$0")"
   for agent in "${agents[@]}"; do
     shim="$bin/$agent"
     if ! [ -e "$shim" ] && ! [ -L "$shim" ]; then
       info "'$agent' is not linked (no file at $shim)"
       continue
     fi
-    if ! is_satchel_shim "$shim"; then
-      warn "skipping '$agent': $shim is not a Satchel shim — not touching it"
+    if ! shim_owned_by_install "$shim" "$agent" "$self"; then
+      if is_satchel_shim "$shim"; then
+        warn "skipping '$agent': $shim belongs to another or ambiguous Satchel installation"
+      else
+        warn "skipping '$agent': $shim is not a Satchel shim — not touching it"
+      fi
       continue
     fi
     rm -f "$shim"
@@ -265,7 +281,7 @@ remove_satchel_image() {
 }
 
 cmd_uninstall() {
-  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead shim_root
+  local purge=0 yes=0 arg self install_dir state home_real p target agent ahead shim_root seen_shims=$'\n'
   for arg in "$@"; do
     case "$arg" in
       --purge) purge=1 ;;
@@ -325,9 +341,13 @@ cmd_uninstall() {
   for shim_root in /usr/local/bin "$HOME/.local/bin" "$(shim_dir)" "$install_dir"; do
     for agent in claude codex; do
       p="$shim_root/$agent"
-      if is_satchel_shim "$p"; then
+      [[ "$seen_shims" != *$'\n'"$p"$'\n'* ]] || continue
+      seen_shims+="$p"$'\n'
+      if shim_owned_by_install "$p" "$agent" "$self"; then
         remove_file_for_uninstall "$p"
         info "removed shim $p"
+      elif is_satchel_shim "$p"; then
+        warn "left ambiguous Satchel shim $p untouched; remove it manually if it is obsolete"
       fi
     done
   done
