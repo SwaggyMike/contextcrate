@@ -18,7 +18,10 @@ The installer chains straight into `satchel init`, which names the machine
 and connects your private Sync Repo (self-hosted Gitea, private GitHub repo,
 a bare repo on any SSH box, or a local bare repo on a shared NFS mount). It
 also ensures the shared agent container image is built before reporting that
-an initialized installation is ready. Then, in any directory:
+an initialized installation is ready. If an interrupted older setup left
+ordinary files at `.satchel/sync/` without a Git repository, init preserves
+them under `.satchel/recovery/` and retries at a clean path; it never deletes
+or overwrites the uncertain files. Then, in any directory:
 
 ```sh
 claude        # Claude Code in a throwaway container, scoped to this directory

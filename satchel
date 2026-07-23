@@ -2744,6 +2744,36 @@ cmd_key() {
   print_pubkeys "this machine's public key — add it to your git host (profile SSH keys, or the repo's deploy keys with write access):"
 }
 
+prepare_sync_clone_destination() {
+  # An interrupted or older setup can leave ordinary files at sync/ without
+  # a Git repository. `git clone` only says "destination ... is not empty";
+  # retrying cannot help, and reporting that as an SSH failure sends the user
+  # toward the wrong fix. Preserve uncertain content locally, then clone into
+  # a clean path. Never follow or replace a symlink.
+  [ -e "$SYNC_DIR" ] || [ -L "$SYNC_DIR" ] || return 0
+  [ ! -L "$SYNC_DIR" ] \
+    || die "$SYNC_DIR is a symlink — refusing to replace it; move it aside and rerun 'satchel init'"
+  [ -d "$SYNC_DIR" ] \
+    || die "$SYNC_DIR exists but is not a directory — move it aside and rerun 'satchel init'"
+  [ ! -d "$SYNC_DIR/.git" ] || return 0
+  if [ -z "$(find "$SYNC_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    rmdir -- "$SYNC_DIR"
+    return 0
+  fi
+
+  local recovery stamp destination suffix=0
+  recovery="$SATCHEL_DIR/recovery"
+  mkdir -p "$recovery"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  destination="$recovery/sync-$stamp"
+  while [ -e "$destination" ] || [ -L "$destination" ]; do
+    suffix=$((suffix + 1))
+    destination="$recovery/sync-$stamp-$suffix"
+  done
+  mv -- "$SYNC_DIR" "$destination"
+  warn "preserved incomplete Sync Repo files at $destination"
+}
+
 # When cloning over SSH fails, say what the user can actually do about it.
 # ssh-add exit codes: 0 = agent has keys, 1 = agent empty, 2 = no agent.
 ssh_key_hint() {
@@ -2752,8 +2782,8 @@ ssh_key_hint() {
   local agent_rc=0
   ssh-add -l >/dev/null 2>&1 || agent_rc=$?
   case "$agent_rc" in
-    0) info "your ssh-agent's keys were refused — the git host doesn't know them (or the repo path is wrong)" ;;
-    1) info "your ssh-agent is reachable but has no keys loaded (ssh-add -l) — if you meant to forward one, run 'ssh-add' on the machine you connected from" ;;
+    0) info "the SSH clone failed; if the error above says 'Permission denied', the git host may not know the loaded key (or the repo path may be wrong)" ;;
+    1) info "the SSH clone failed and your ssh-agent has no keys loaded — run 'ssh-add' if the error above is an authentication failure" ;;
   esac
   if have_pubkey; then
     print_pubkeys "this machine's public key — add it to your git host (profile SSH keys, or the repo's deploy keys with write access):"
@@ -2817,13 +2847,14 @@ cmd_init() {
         fi
         ;;
     esac
-    # Auth failures loop in place: show the key, wait for the user to add it
-    # to the git host, retry. Never "go rerun init".
+    # Clone failures loop in place: show SSH guidance when relevant, let the
+    # user fix the concrete Git error above, then retry. Never "go rerun init".
     while [ ! -d "$SYNC_DIR/.git" ]; do
+      prepare_sync_clone_destination
       git clone "$url" "$SYNC_DIR" && break
       ssh_key_hint "$url"
       key_shown=1
-      if ! confirm_yes "added the key to your git host? retry the clone?"; then
+      if ! confirm_yes "fixed the clone error above? retry?"; then
         warn "skipping sync for now — sessions work, nothing syncs; run 'satchel init' when ready"
         url=""
         break
