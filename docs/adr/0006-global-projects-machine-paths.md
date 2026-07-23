@@ -1,5 +1,9 @@
 # ADR 0006: Global Git projects, machine-local paths
 
+ADR 0011 refines the storage model below: `repositories.json` is now the only
+origin authority, `project.json` is removed, and machine caches store only a
+Project ID.
+
 The Sync Repo represents one user's portable Satchel state. Project identity
 and tracking decisions must therefore be global, while checkout paths remain
 machine-local. Arbitrary directories do not have a stable fleet-wide identity;

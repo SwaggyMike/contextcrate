@@ -122,7 +122,7 @@ cmd_init() {
   if [ -n "$url" ]; then
     mkdir -p "$SYNC_DIR/machines/$name" "$SYNC_DIR/projects" "$SYNC_DIR/skills/shared"
     [ -f "$SYNC_DIR/machines/$name/projects.json" ] || printf '{"paths":{}}\n' > "$SYNC_DIR/machines/$name/projects.json"
-    [ -f "$SYNC_DIR/repositories.json" ] || printf '{"repositories":{}}\n' > "$SYNC_DIR/repositories.json"
+    [ -f "$SYNC_DIR/repositories.json" ] || printf '{}\n' > "$SYNC_DIR/repositories.json"
     ensure_skill_library
     [ -f "$SYNC_DIR/profile.md" ] || printf '# Profile\n' > "$SYNC_DIR/profile.md"
     [ -f "$SYNC_DIR/preferences.md" ] || printf '# Preferences\n' > "$SYNC_DIR/preferences.md"

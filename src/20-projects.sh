@@ -19,7 +19,7 @@ ensure_project_registry() {
 ensure_repository_registry() {
   local f; f="$(repository_registry_file)"
   mkdir -p "$(dirname "$f")"
-  [ -f "$f" ] || printf '{"repositories":{}}\n' > "$f"
+  [ -f "$f" ] || printf '{}\n' > "$f"
 }
 
 git_root_for_path() { git -C "$1" rev-parse --show-toplevel 2>/dev/null || true; }
@@ -66,20 +66,86 @@ project_identity() { # project_identity <repo-root> → portable normalized orig
 
 repository_decision() { # repository_decision <identity> → tracked | ignored | empty
   local f; f="$(repository_registry_file)"; [ -f "$f" ] || return 0
-  jq -r --arg r "$1" '.repositories[$r].status // empty' "$f"
+  jq -r --arg r "$1" '.[$r].status // empty' "$f"
 }
 
 project_for_identity() {
   local f; f="$(repository_registry_file)"; [ -f "$f" ] || return 0
-  jq -r --arg r "$1" '.repositories[$r] | select(.status == "tracked") | .project // empty' "$f"
+  jq -r --arg r "$1" '.[$r] | select(.status == "tracked") | .project // empty' "$f"
+}
+
+origin_for_project() {
+  local f; f="$(repository_registry_file)"; [ -f "$f" ] || return 0
+  jq -r --arg id "$1" \
+    'to_entries[] | select(.value.status == "tracked" and .value.project == $id) | .key' "$f"
 }
 
 set_repository_decision() { # set_repository_decision <identity> <tracked|ignored> [project]
   local identity="$1" status="$2" id="${3:-}" f
   ensure_repository_registry; f="$(repository_registry_file)"
   jq --arg r "$identity" --arg status "$status" --arg id "$id" \
-    '.repositories[$r]={status:$status,origin:$r} + (if $id == "" then {} else {project:$id} end)' \
+    '.[$r]={status:$status} + (if $id == "" then {} else {project:$id} end)' \
     "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+validate_project_state() {
+  ensure_repository_registry
+  local registry project_dir id origin f
+  registry="$(repository_registry_file)"
+
+  jq -e '
+    type == "object"
+    and all(to_entries[];
+      (.key | type == "string" and length > 0)
+      and (.value | type == "object")
+      and if .value.status == "tracked" then
+        ((.value | keys) == ["project", "status"])
+        and (.value.project | type == "string" and length > 0)
+      elif .value.status == "ignored" then
+        ((.value | keys) == ["status"])
+      else false end)
+    and (([to_entries[] | select(.value.status == "tracked") | .value.project] | length)
+      == ([to_entries[] | select(.value.status == "tracked") | .value.project] | unique | length))
+  ' "$registry" >/dev/null \
+    || die "invalid repositories.json — expected one unique tracked Project per canonical origin, or an ignored decision"
+
+  while IFS= read -r origin; do
+    [ "$(canonical_remote "$origin")" = "$origin" ] \
+      || die "repository identity '$origin' is not canonical"
+  done < <(jq -r 'keys[]' "$registry")
+
+  while IFS=$'\t' read -r origin id; do
+    valid_project_id "$id" || die "repository '$origin' has unsafe Project id '$id'"
+    [ -d "$SYNC_DIR/projects/$id" ] \
+      || die "repository '$origin' points to missing Project '$id'"
+  done < <(jq -r 'to_entries[] | select(.value.status == "tracked") | [.key,.value.project] | @tsv' "$registry")
+
+  for project_dir in "$SYNC_DIR"/projects/*/; do
+    [ -d "$project_dir" ] || continue
+    [ ! -L "${project_dir%/}" ] || die "Project directories cannot be symlinks: ${project_dir%/}"
+    id="$(basename "$project_dir")"
+    valid_project_id "$id" || die "unsafe Project directory '$id'"
+    [ -d "$project_dir/handoffs" ] || die "Project '$id' is missing its handoffs directory"
+    [ ! -e "$project_dir/project.json" ] \
+      || die "Project '$id' contains obsolete project.json metadata"
+  done
+
+  for f in "$SYNC_DIR"/machines/*/projects.json; do
+    [ -f "$f" ] || continue
+    jq -e '
+      type == "object" and (.paths | type == "object")
+      and all(.paths | to_entries[];
+        (.key | type == "string" and startswith("/"))
+        and (.value | type == "object")
+        and ((.value | keys) == ["project"])
+        and (.value.project | type == "string" and length > 0))
+    ' "$f" >/dev/null || die "invalid machine Project cache: $f"
+    while IFS= read -r id; do
+      valid_project_id "$id" || die "machine cache $f has unsafe Project id '$id'"
+      [ -d "$SYNC_DIR/projects/$id" ] \
+        || die "machine cache $f points to missing Project '$id'"
+    done < <(jq -r '.paths[].project' "$f")
+  done
 }
 
 remove_project_path() {
@@ -87,11 +153,11 @@ remove_project_path() {
   jq --arg p "$path" 'del(.paths[$p])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
-map_project_path() { # map_project_path <repo-root> <project-id> [identity]
-  local path id="$2" identity="${3:-}" f
+map_project_path() { # map_project_path <repo-root> <project-id>
+  local path id="$2" f
   path="$(readlink -f "$1")"; ensure_project_registry; f="$(machine_projects_file)"
-  jq --arg p "$path" --arg id "$id" --arg identity "$identity" \
-    '.paths[$p]={status:"tracked",project:$id} + (if $identity == "" then {} else {origin:$identity} end)' \
+  jq --arg p "$path" --arg id "$id" \
+    '.paths[$p]={project:$id}' \
     "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
@@ -130,10 +196,12 @@ path_overlaps_roots() {
 }
 
 refresh_project_paths() { # discover/match repositories inside the explicit session roots
-  [ "$HOST_MODE" -eq 0 ] || return 0
   local launch="$1" roots=() root path id identity actual f
+  ensure_project_registry; ensure_repository_registry
+  validate_project_state
+  [ "$HOST_MODE" -eq 0 ] || return 0
   while IFS= read -r root; do roots+=("$root"); done < <(session_roots "$launch")
-  ensure_project_registry; ensure_repository_registry; f="$(machine_projects_file)"
+  f="$(machine_projects_file)"
 
   # Remove stale cached checkouts only when they overlap this session's
   # explicit roots. Paths elsewhere on the machine are deliberately untouched.
@@ -148,7 +216,7 @@ refresh_project_paths() { # discover/match repositories inside the explicit sess
     if [ -n "$identity" ]; then
       id="$(project_for_identity "$identity")"
       if [ -n "$id" ] && [ -d "$SYNC_DIR/projects/$id" ]; then
-        map_project_path "$path" "$id" "$identity"
+        map_project_path "$path" "$id"
       else
         # An origin change or a global ignore invalidates a former path cache.
         remove_project_path "$path"
@@ -159,24 +227,15 @@ refresh_project_paths() { # discover/match repositories inside the explicit sess
 }
 
 project_for_path() { # project_for_path <path> → id; nearest tracked ancestor wins
-  local path="$1" f current status id
+  local path="$1" f current id
   f="$(machine_projects_file)"; [ -f "$f" ] || return 0
   current="$(readlink -f "$path")"
   while :; do
-    status="$(jq -r --arg p "$current" '.paths[$p].status // empty' "$f")"
-    if [ "$status" = tracked ]; then
-      id="$(jq -r --arg p "$current" '.paths[$p].project // empty' "$f")"
-      [ -n "$id" ] && printf '%s' "$id"
-      return 0
-    fi
+    id="$(jq -r --arg p "$current" '.paths[$p].project // empty' "$f")"
+    if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
     [ "$current" = / ] && break
     current="$(dirname "$current")"
   done
-}
-
-path_decision() { # exact path cache only: tracked | empty
-  local f; f="$(machine_projects_file)"; [ -f "$f" ] || return 0
-  jq -r --arg p "$(readlink -f "$1")" '.paths[$p].status // empty' "$f"
 }
 
 # Attribution rule: work belongs to whichever tracked project's directory it
@@ -193,7 +252,7 @@ visible_projects() { # visible_projects <launch-dir> → "path<TAB>id" per visib
     for r in "${roots[@]}"; do
       case "$path" in "$r"|"$r"/*) printf '%s\t%s\n' "$path" "$id"; break ;; esac
     done
-  done < <(jq -r '.paths | to_entries[] | select(.value.status == "tracked") | "\(.key)\t\(.value.project // empty)"' "$f")
+  done < <(jq -r '.paths | to_entries[] | "\(.key)\t\(.value.project // empty)"' "$f")
 }
 
 visible_candidates() { # visible_candidates <launch-dir> → path<TAB>portable-origin
@@ -222,48 +281,33 @@ unique_project_id() {
 }
 
 enroll_project() { # enroll_project <path> [id] → prints id
-  local path id identity existing meta meta_remote
+  local path id identity existing assigned_origin
   path="$(git_root_for_path "$1")"
   [ -n "$path" ] || die "$(readlink -f "$1") is not inside a Git repository"
+  ensure_project_registry
+  ensure_repository_registry
+  validate_project_state
   identity="$(project_identity "$path")"
   id="${2:-}"
   if [ -n "$identity" ]; then
     existing="$(project_for_identity "$identity")"
     [ -z "$existing" ] || id="$existing"
-    # A deliberate track on pre-registry state may already have the right
-    # Project metadata in a transport-specific spelling. Reuse it instead of
-    # creating a duplicate; this is also the manual upgrade path.
-    if [ -z "$id" ]; then
-      for meta in "$SYNC_DIR"/projects/*/project.json; do
-        [ -f "$meta" ] || continue
-        meta_remote="$(jq -r '.git_remote // empty' "$meta")"
-        if [ -n "$meta_remote" ] && [ "$(canonical_remote "$meta_remote")" = "$identity" ]; then
-          id="$(basename "$(dirname "$meta")")"; break
-        fi
-      done
-    fi
   fi
   if [ -z "$id" ]; then id="$(unique_project_id "$(basename "$path")")"; fi
   id="$(slugify "$id")"
   valid_project_id "$id" \
     || die "project id must start with a letter or number and contain only letters, numbers, dots, underscores, and hyphens"
-  if [ -f "$SYNC_DIR/projects/$id/project.json" ] && [ -n "$identity" ]; then
-    meta_remote="$(jq -r '.git_remote // empty' "$SYNC_DIR/projects/$id/project.json")"
-    if [ -n "$meta_remote" ] && [ "$(canonical_remote "$meta_remote")" != "$identity" ]; then
-      die "project '$id' belongs to $meta_remote, not $identity"
+  if [ -n "$identity" ]; then
+    assigned_origin="$(origin_for_project "$id")"
+    if [ -n "$assigned_origin" ] && [ "$assigned_origin" != "$identity" ]; then
+      die "Project '$id' belongs to $assigned_origin, not $identity"
     fi
-    jq --arg identity "$identity" '.git_remote=$identity' "$SYNC_DIR/projects/$id/project.json" \
-      > "$SYNC_DIR/projects/$id/project.json.tmp" \
-      && mv "$SYNC_DIR/projects/$id/project.json.tmp" "$SYNC_DIR/projects/$id/project.json"
   fi
   mkdir -p "$SYNC_DIR/projects/$id/handoffs"
   touch "$SYNC_DIR/projects/$id/handoffs/.gitkeep"
-  if [ ! -f "$SYNC_DIR/projects/$id/project.json" ]; then
-    jq -n --arg id "$id" --arg identity "$identity" \
-      '{id:$id} + (if $identity == "" then {} else {git_remote:$identity} end)' > "$SYNC_DIR/projects/$id/project.json"
-  fi
   [ -z "$identity" ] || set_repository_decision "$identity" tracked "$id"
-  map_project_path "$path" "$id" "$identity"
+  map_project_path "$path" "$id"
+  validate_project_state
   printf '%s' "$id"
 }
 

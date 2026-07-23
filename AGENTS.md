@@ -52,6 +52,12 @@ temporary `HOME` and `SATCHEL_DIR`.
 - Validate synced state before committing it. A failed network operation must
   leave a retryable local state rather than losing the user's work.
 - Ownership repair must target only the documented writable mounts.
+- `repositories.json` is the sole authority for canonical Git origins and
+  tracked/ignored decisions. Project directories contain only handoffs, and
+  machine Project caches contain only `path → Project ID`.
+- Never infer repository identity from a folder or Project name. The same
+  canonical origin shares one Project; different origins must have different
+  Project IDs.
 
 ## Bash implementation rules
 

@@ -25,10 +25,14 @@ git -C "$tmp/work/app" remote add origin git@github.com:Example/App.git
 id="$(enroll_project "$tmp/work/app" sample)"
 [ "$id" = sample ]
 [ "$(project_for_path "$tmp/work/app/src")" = sample ]
-[ "$(jq -r '.paths | to_entries[0].value.status' "$(machine_projects_file)")" = tracked ]
-[ -f "$SATCHEL_DIR/sync/projects/sample/project.json" ]
+[ "$(jq -r '.paths | to_entries[0].value.project' "$(machine_projects_file)")" = sample ]
+[ "$(jq -r '.paths | to_entries[0].value | keys | join(",")' "$(machine_projects_file)")" = project ]
+[ ! -e "$SATCHEL_DIR/sync/projects/sample/project.json" ]
+[ -d "$SATCHEL_DIR/sync/projects/sample/handoffs" ]
 [ "$(repository_decision github.com/example/app)" = tracked ]
 [ "$(project_for_identity github.com/example/app)" = sample ]
+[ "$(jq -r '."github.com/example/app".project' "$(repository_registry_file)")" = sample ]
+[ -z "$(jq -r '."github.com/example/app".origin // empty' "$(repository_registry_file)")" ]
 [ "$(canonical_remote 'git@github.com:Example/Repo.git')" = "$(canonical_remote 'https://github.com/example/repo')" ]
 [ "$(canonical_remote 'https://token@example.com/Owner/Repo.git?x=secret')" = example.com/Owner/Repo ]
 ! grep -q token "$(repository_registry_file)"
@@ -238,13 +242,13 @@ done
 [ -f "$SATCHEL_DIR/sync/projects/retained/handoffs/2026-04-12T00-00-00Z--testbox.md" ]
 
 # Global untracking ignores a portable origin, clears every machine's path
-# cache, and removes active handoffs/project metadata.
+# cache, and removes the active Project and handoffs.
 mkdir -p "$tmp/work/remove-me"
 git init -q -b main "$tmp/work/remove-me"
 git -C "$tmp/work/remove-me" remote add origin https://github.com/example/remove-me.git
 remove_id="$(enroll_project "$tmp/work/remove-me" remove-me)"
 mkdir -p "$SATCHEL_DIR/sync/machines/other"
-printf '{"paths":{"/other/remove-me":{"status":"tracked","project":"remove-me"}}}\n' \
+printf '{"paths":{"/other/remove-me":{"project":"remove-me"}}}\n' \
   > "$SATCHEL_DIR/sync/machines/other/projects.json"
 untrack_project "$remove_id"
 [ "$(repository_decision github.com/example/remove-me)" = ignored ]
@@ -252,18 +256,38 @@ untrack_project "$remove_id"
 [ -z "$(project_for_path "$tmp/work/remove-me")" ]
 [ "$(jq '.paths | length' "$SATCHEL_DIR/sync/machines/other/projects.json")" = 0 ]
 
-# Explicit tracking is the manual private-repo upgrade path: reuse an existing
-# pre-registry Project whose remote differs only by transport spelling.
-mkdir -p "$tmp/work/legacy" "$SATCHEL_DIR/sync/projects/legacy/handoffs"
-git init -q -b main "$tmp/work/legacy"
-git -C "$tmp/work/legacy" remote add origin https://github.com/Example/Legacy.git
-printf '{"id":"legacy","git_remote":"git@github.com:Example/Legacy.git"}\n' \
-  > "$SATCHEL_DIR/sync/projects/legacy/project.json"
-legacy_id="$(enroll_project "$tmp/work/legacy")"
-[ "$legacy_id" = legacy ]
-[ "$(project_for_identity github.com/example/legacy)" = legacy ]
-[ "$(jq -r '.git_remote' "$SATCHEL_DIR/sync/projects/legacy/project.json")" = github.com/example/legacy ]
-[ ! -d "$SATCHEL_DIR/sync/projects/legacy-2" ]
+# Folder names suggest IDs but never establish identity. Different origins
+# with the same basename get unique global IDs; an explicit conflicting ID is
+# rejected instead of merging repositories.
+mkdir -p "$tmp/collisions/one/satchel" "$tmp/collisions/two/satchel" "$tmp/collisions/three/other"
+git init -q -b main "$tmp/collisions/one/satchel"
+git init -q -b main "$tmp/collisions/two/satchel"
+git init -q -b main "$tmp/collisions/three/other"
+git -C "$tmp/collisions/one/satchel" remote add origin https://example.com/one/satchel.git
+git -C "$tmp/collisions/two/satchel" remote add origin https://example.com/two/satchel.git
+git -C "$tmp/collisions/three/other" remote add origin https://example.com/three/other.git
+collision_one="$(enroll_project "$tmp/collisions/one/satchel")"
+collision_two="$(enroll_project "$tmp/collisions/two/satchel")"
+[ "$collision_one" = satchel ]
+[ "$collision_two" = satchel-2 ]
+! (enroll_project "$tmp/collisions/three/other" satchel 2>/dev/null)
+[ -z "$(repository_decision example.com/three/other)" ]
+
+# Registry and cache conflicts fail explicitly. Satchel never guesses through
+# duplicate origins, missing Projects, old metadata, or malformed path caches.
+registry="$(repository_registry_file)"
+jq '.["example.com/conflict"]={status:"tracked",project:"satchel"}' "$registry" \
+  > "$registry.tmp" && mv "$registry.tmp" "$registry"
+! (validate_project_state 2>/dev/null)
+jq 'del(.["example.com/conflict"])' "$registry" > "$registry.tmp" && mv "$registry.tmp" "$registry"
+touch "$SATCHEL_DIR/sync/projects/sample/project.json"
+! (validate_project_state 2>/dev/null)
+rm "$SATCHEL_DIR/sync/projects/sample/project.json"
+printf '{"paths":{"/missing":{"project":"missing"}}}\n' \
+  > "$SATCHEL_DIR/sync/machines/other/projects.json"
+! (validate_project_state 2>/dev/null)
+printf '{"paths":{}}\n' > "$SATCHEL_DIR/sync/machines/other/projects.json"
+validate_project_state
 
 # Status keeps active Project IDs/origins visible but collapses ignored repos
 # unless the explicit detail flag is requested.

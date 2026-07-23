@@ -56,13 +56,13 @@ cmd_track() {
   info "tracking '$id' at $(git_root_for_path "$PWD")"
 }
 
-untrack_project() { # untrack_project <project-id> [known-origin]
-  local id="$1" identity="${2:-}" meta dir f
+untrack_project() { # untrack_project <project-id>
+  local id="$1" identity dir f
+  validate_project_state
   valid_project_id "$id" || die "invalid or unsafe project id '$id'"
   dir="$SYNC_DIR/projects/$id"
   [ -d "$dir" ] || die "unknown project id '$id' (run satchel status)"
-  meta="$dir/project.json"
-  [ -n "$identity" ] || identity="$(jq -r '.git_remote // empty' "$meta" 2>/dev/null || true)"
+  identity="$(origin_for_project "$id")"
   [ -z "$identity" ] || ignore_repository "$identity"
 
   # A Project is global: remove every checkout cache, then remove its active
@@ -73,21 +73,22 @@ untrack_project() { # untrack_project <project-id> [known-origin]
       "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   done
   rm -rf -- "$dir"
+  validate_project_state
 }
 
 cmd_untrack() {
   sync_ready || die "sync is not set up — run 'satchel init' first"
   [ $# -le 1 ] || die "usage: satchel untrack [project-id]"
-  local id="${1:-}" root identity=""
+  local id="${1:-}" root
   if [ -z "$id" ]; then
     root="$(git_root_for_path "$PWD")"
     [ -n "$root" ] || die "$PWD is not inside a Git repository; pass a project id"
-    identity="$(project_identity "$root")"
+    local identity; identity="$(project_identity "$root")"
     [ -z "$identity" ] || id="$(project_for_identity "$identity")"
     [ -n "$id" ] || id="$(project_for_path "$root")"
   fi
   [ -n "$id" ] || die "this repository is not a tracked project"
-  untrack_project "$id" "$identity"
+  untrack_project "$id"
   quiet_push "ignore project $id"
   info "project '$id' is ignored across the caravan; active handoffs removed"
 }

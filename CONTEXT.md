@@ -17,7 +17,7 @@ A single run of an agent CLI inside a throwaway Docker container, scoped to one 
 _Avoid_: workspace, environment
 
 **Project**:
-A Git repository the user explicitly chose to track. Network-origin identity, the tracked/ignored decision, and handoffs are global across the caravan; checkout paths are machine-local caches discovered beneath the session's explicit mount roots. Unknown repos prompt only after substantive work. `satchel track` can explicitly link a repo with a local or missing origin, but ordinary directories are never Projects.
+A Git repository the user explicitly chose to track. `repositories.json` is the sole authority for canonical network-origin identity and the global tracked/ignored decision; `projects/<id>/` holds only handoffs, while checkout paths are machine-local caches pointing to that global ID. Folder names never establish identity. Unknown repos prompt only after substantive work. `satchel track` can explicitly link a repo with a local or missing origin, but ordinary directories are never Projects.
 _Avoid_: every working directory, every repository (ignored and unknown repos are not Projects)
 
 **Sync Repo**:

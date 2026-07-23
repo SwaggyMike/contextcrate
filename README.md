@@ -169,10 +169,12 @@ too (not the remote Sync Repo); `--yes` makes either form non-interactive.
 
 ## What syncs, what doesn't
 
-The Sync Repo's root `profile.md`, `preferences.md`, and `repositories.json`
-are global. Project identity and bounded timestamped handoffs live under
-`projects/`; checkout paths, notes, inventory, and guides live under
-`machines/<machine>/`. Global skills live under `skills/shared/`.
+The Sync Repo's root `profile.md` and `preferences.md` are global.
+`repositories.json` is the single authority mapping canonical Git origins to
+tracked Project IDs or ignored decisions. Bounded timestamped handoffs live
+under `projects/<id>/handoffs/`; machine-local checkout paths map only to those
+global IDs under `machines/<machine>/projects.json`. Notes, inventory, and
+guides are also machine-local. Global skills live under `skills/shared/`.
 
 Handoffs, MCP registry + tokens (private repo, your SSH keys — see
 [ADR 0002](docs/adr/0002-mcp-tokens-in-sync-repo.md)), and the shared

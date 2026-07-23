@@ -27,6 +27,7 @@ cmd_status() {
   if ! sync_ready; then
     printf '  sync: not set up (run satchel init)\n'
   else
+    validate_project_state
     printf '  sync: %s\n' "$SYNC_URL"
     printf '  last sync commit: %s\n' "$(git_sync log -1 --format='%h %s (%cr)' 2>/dev/null || echo none)"
     local bv; bv="$(baseline_marker_version)"
@@ -57,15 +58,16 @@ cmd_status() {
       date=""; count=0
       [ -n "$f" ] && date="$(sed -n "1s/.*date=\([^ ]*\).*/\1/p" "$f")"
       for f in "$p"handoffs/*.md; do [ -f "$f" ] && count=$((count + 1)); done
-      origin="$(jq -r '.git_remote // "local or no origin"' "$p/project.json" 2>/dev/null || printf 'local or no origin')"
+      origin="$(origin_for_project "$(basename "$p")")"
+      [ -n "$origin" ] || origin="local or no origin"
       printf '  %-22s %-38s %s handoff(s)%s\n' "$(basename "$p")" "$origin" "$count" "${date:+, latest $date}"
     done
     local ignored=0 registry
     registry="$(repository_registry_file)"
-    [ -f "$registry" ] && ignored="$(jq '[.repositories[] | select(.status == "ignored")] | length' "$registry")"
+    [ -f "$registry" ] && ignored="$(jq '[.[] | select(.status == "ignored")] | length' "$registry")"
     printf '  ignored repositories: %s%s\n' "$ignored" "$([ "$show_ignored" -eq 0 ] && [ "$ignored" -gt 0 ] && printf ' (use satchel status --ignored to list)')"
     if [ "$show_ignored" -eq 1 ] && [ "$ignored" -gt 0 ]; then
-      jq -r '.repositories | to_entries[] | select(.value.status == "ignored") | "    " + .key' "$registry"
+      jq -r 'to_entries[] | select(.value.status == "ignored") | "    " + .key' "$registry"
     fi
     local names; names="$(mcp_names | paste -sd, - | sed 's/,/, /g')"
     printf '\n%sMCP servers:%s %s\n' "$OUT_BOLD$OUT_BLUE" "$OUT_RESET" "${names:-(none)}"
