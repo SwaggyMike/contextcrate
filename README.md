@@ -4,9 +4,9 @@ Run AI coding agents (Claude Code, Codex) in disposable Docker/Podman
 containers, with session handoffs, MCP servers, and skills synced between
 your machines through a private git repo you own.
 
-One bash script. No daemon, no database, no cloud — plain files and plain
-git. Built for home-lab Linux boxes, Unraid included. Deliberately not
-production-grade: simple, readable, boring.
+One self-contained Bash artifact. No daemon, no database, no cloud — plain
+files and plain git. Built for home-lab Linux boxes, Unraid included.
+Deliberately not production-grade: simple, readable, boring.
 
 ## Install
 
@@ -180,3 +180,18 @@ skill library ([ADR 0004](docs/adr/0004-one-shared-skill-library.md))
 sync. Agent logins and transcripts never do.
 
 Vocabulary lives in [CONTEXT.md](CONTEXT.md); decisions in [docs/adr/](docs/adr/).
+
+## Development
+
+Satchel's maintainable source lives in ordered subsystem modules under `src/`.
+The installer still ships the generated, self-contained `satchel` artifact.
+After changing a module, rebuild and run the complete verification:
+
+```sh
+bash scripts/build.sh
+bash tests/run.sh
+```
+
+CI rejects source/artifact drift. See
+[ADR 0010](docs/adr/0010-modular-source-single-artifact.md) and
+[AGENTS.md](AGENTS.md) for the development contract.

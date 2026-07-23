@@ -1,11 +1,11 @@
 # Satchel
 
-A single bash script for running AI coding agents (Claude Code, Codex) in disposable Docker containers on home-lab Linux machines, with session handoffs and settings synced between machines via a private git remote. Deliberately not production-grade: simple, readable, boring.
+A single generated Bash artifact for running AI coding agents (Claude Code, Codex) in disposable Docker containers on home-lab Linux machines, with session handoffs and settings synced between machines via a private git remote. Its development source is organized by subsystem under `src/`. Deliberately not production-grade: simple, readable, boring.
 
 ## Language
 
 **Satchel**:
-The Satchel program itself — one bash script, installed as the `satchel` command.
+The Satchel program itself — one generated Bash artifact, installed as the `satchel` command.
 _Avoid_: daemon, service, platform
 
 **Shim**:

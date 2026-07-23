@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Generated from src/*.sh by scripts/build.sh; do not edit directly.
 # satchel — Satchel: run AI coding agents (Claude Code, Codex) in
 # disposable containers, with handoffs, MCP servers, and skills synced
 # between machines through a private git repo.

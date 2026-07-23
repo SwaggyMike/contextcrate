@@ -9,8 +9,13 @@ for required_command in git jq ssh-agent; do
     || { printf 'missing test dependency: %s\n' "$required_command" >&2; exit 1; }
 done
 
+bash scripts/build.sh --check
 bash -n satchel
 bash -n install.sh
+bash -n scripts/build.sh
+for source_file in src/[0-9][0-9]-*.sh; do
+  bash -n "$source_file"
+done
 git diff --check
 git diff --cached --check
 

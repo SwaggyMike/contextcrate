@@ -14,7 +14,7 @@ Read those sources instead of inferring a new model from one function.
 
 1. Read `CONTEXT.md`.
 2. Read the ADRs relevant to the subsystem being changed.
-3. Trace the affected functions in `satchel` and their existing tests.
+3. Trace the affected functions in `src/` and their existing tests.
 4. Check `git status` and preserve unrelated user changes.
 
 The source repository and the user's private Sync Repo are separate systems.
@@ -23,12 +23,11 @@ temporary `HOME` and `SATCHEL_DIR`.
 
 ## Architecture
 
-- Keep installation dependency-light and updates atomic. The installed
-  `satchel` command is currently one self-contained Bash file.
-- The single source file is a choice, not a permanent constraint. Improve
-  function and section boundaries first. If modular source files would
-  materially reduce coupling or editing risk, document the deployment impact
-  in an ADR and preserve a single atomic installed artifact.
+- Keep installation dependency-light and updates atomic. Development sources
+  are ordered modules under `src/`; `scripts/build.sh` produces the one
+  self-contained installed `satchel` artifact.
+- Edit `src/*.sh`, never the generated `satchel` file. Numeric module prefixes
+  define concatenation order. Preserve a single atomic installed artifact.
 - Do not add a daemon, database, mandatory build toolchain, or additional
   long-lived state without a concrete need and an ADR.
 - Prefer plain files, native agent conventions, and normal Git behavior over
@@ -61,6 +60,9 @@ temporary `HOME` and `SATCHEL_DIR`.
   explicitly where callers require success.
 - Quote path and user-derived values. Use arrays for command arguments.
 - Keep functions narrow and name side effects clearly.
+- Keep top-level execution in the header/core initialization and `99-main.sh`;
+  subsystem modules should define behavior rather than perform work when
+  concatenated.
 - Reuse the existing helpers for Git, JSON, engine selection, output, and
   confirmation instead of bypassing their safety behavior.
 - Write structured files through a temporary file and atomic rename when a
@@ -75,6 +77,7 @@ temporary `HOME` and `SATCHEL_DIR`.
 Run the complete local verification from the repository root:
 
 ```bash
+bash scripts/build.sh
 bash tests/run.sh
 ```
 
@@ -89,6 +92,7 @@ Tests should:
 
 Subsystem mapping:
 
+- source generation and drift: `tests/test_build.sh`
 - baseline and machine knowledge: `tests/test_baseline.sh`
 - clipboard forwarding: `tests/test_clipboard.sh`
 - installation, shims, and uninstall: `tests/test_installer.sh`
@@ -110,6 +114,7 @@ Subsystem mapping:
 ## Definition of done
 
 - `bash tests/run.sh` passes.
+- `bash scripts/build.sh --check` confirms the artifact matches `src/`.
 - New behavior and important failure paths are covered.
 - The diff contains no unrelated changes or private Sync Repo content.
 - User-visible behavior and architectural decisions are documented.
