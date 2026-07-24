@@ -44,6 +44,13 @@ file_handoff() { # file_handoff <project-id-or-empty> <date> <body> — empty id
   [ "$pruned" -eq 0 ] || info "pruned $pruned older handoff(s); keeping the latest $HANDOFF_RETENTION"
 }
 
+handoff_body_complete() {
+  local body="$1" heading
+  for heading in '## Goal' '## Done' '## In flight' '## Next steps' '## Gotchas'; do
+    grep -Fqx "$heading" <<< "$body" || return 1
+  done
+}
+
 file_multi_handoffs() { # file_multi_handoffs <date> <"id id ..."> <body> → prints count filed
   # Splits an attribution-format body ('=== project: x ===' / '=== machine ===')
   # and files each well-formed note under its scope. Unknown ids are dropped:
@@ -53,7 +60,7 @@ file_multi_handoffs() { # file_multi_handoffs <date> <"id id ..."> <body> → pr
   while IFS= read -r line; do
     case "$line" in
       '=== project: '*' ==='|'=== machine ==='|'=== end ===')
-        if [ -n "$cur" ] && printf '%s' "$chunk" | grep -q '^## Goal'; then
+        if [ -n "$cur" ] && handoff_body_complete "$chunk"; then
           case "$valid" in
             *" $cur "*)
               found=-1
@@ -95,10 +102,14 @@ resolve_candidate_handoffs() { # resolve candidate scopes after substantive work
     path="${candidate_paths[$k]}"; identity="${candidate_identities[$k]}"
     if [ -t 0 ]; then
       if confirm_yes "track Git repo $path ($identity) as a project?"; then
-        id="$(enroll_project "$path")"
-        candidate_resolutions[$k]="project:$id"
-        RESOLVED_PROJECT_IDS+="$id "
-        info "tracking '$id' across the caravan"
+        if id="$(enroll_project "$path")"; then
+          candidate_resolutions[$k]="project:$id"
+          RESOLVED_PROJECT_IDS+="$id "
+          info "tracking '$id' across the caravan"
+        else
+          candidate_resolutions[$k]=machine
+          warn "could not track $identity; preserving its work in this machine's handoff"
+        fi
       else
         ignore_repository "$identity"
         candidate_resolutions[$k]=machine
@@ -275,16 +286,14 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
     return 0
   fi
   # NO_HANDOFF is the agent saying "nothing worth handing off" (a Q&A-only
-  # session) — a valid outcome, not a model failure. Without this, an empty
-  # session trips the fallback below and pays for a pointless second model.
-  if printf '%s' "$body" | grep -q '^NO_HANDOFF'; then
+  # session) — a valid outcome, not a model failure. Accept it only from a
+  # successful writer; partial output from a failed command is not authoritative.
+  if [ "$rc" -eq 0 ] && [ "$body" = NO_HANDOFF ]; then
     rm -f "$errf" "$bodyf"
     info "no work to hand off — previous handoff kept"
     return 0
   fi
-  # The prompt mandates a "## Goal" section; anything without one is an agent
-  # error message ("Not logged in", model not found, usage text), not a handoff.
-  if ! printf '%s' "$body" | grep -q '^## Goal'; then
+  if [ "$rc" -ne 0 ] || ! handoff_body_complete "$body"; then
     # Fatfingered model safeguard: a bad SATCHEL_HANDOFF_MODEL_* must not stop
     # handoffs — retry once on the agent's own default and say who to blame.
     if [ -n "$model" ]; then
@@ -299,12 +308,12 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
         return 0
       fi
     fi
-    if printf '%s' "$body" | grep -q '^NO_HANDOFF'; then
+    if [ "$rc" -eq 0 ] && [ "$body" = NO_HANDOFF ]; then
       rm -f "$errf" "$bodyf"
       info "no work to hand off — previous handoff kept"
       return 0
     fi
-    if ! printf '%s' "$body" | grep -q '^## Goal'; then
+    if [ "$rc" -ne 0 ] || ! handoff_body_complete "$body"; then
       warn "handoff generation failed — keeping the previous handoff"
       if [ -s "$errf" ]; then
         warn "the agent said: $(tail -n 1 "$errf")"
@@ -322,9 +331,8 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
       body="$RESOLVED_HANDOFF_BODY"; ids+="$RESOLVED_PROJECT_IDS"
     fi
     saved="$(file_multi_handoffs "$now" "$ids" "$body")"
-    # No delimiters parsed: keep the content anyway, filed under the launch
-    # scope exactly like a classic single-scope session.
-    [ "$saved" -eq 0 ] && file_handoff "$slug" "$now" "$body"
+    [ "$saved" -gt 0 ] \
+      || warn "handoff attribution was incomplete — keeping the previous handoff"
   else
     file_handoff "$slug" "$now" "$body"
   fi

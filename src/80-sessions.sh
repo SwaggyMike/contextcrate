@@ -132,9 +132,12 @@ fix_home_ownership() { # fix_home_ownership <Satchel-managed-path>
   ownership_path_allowed "$1" \
     || die "refusing ownership repair outside Satchel-managed writable state: $1"
   podman_rootless && return 0
-  local count
-  count="$(find "$1" ! -user "$SATCHEL_UID" -printf . 2>/dev/null | wc -c)"
-  [ "$count" -gt 0 ] || return 0
+  local mismatch
+  if ! mismatch="$(find "$1" ! -user "$SATCHEL_UID" -print -quit 2>/dev/null)"; then
+    warn "could not inspect Satchel's internal data at $1 for ownership repair"
+    return 0
+  fi
+  [ -n "$mismatch" ] || return 0
   local label=()
   if selinux_active; then label=(--security-opt label=disable); fi
   if "$(engine)" run --rm --label "$MANAGED_CONTAINER_LABEL" --user 0:0 \

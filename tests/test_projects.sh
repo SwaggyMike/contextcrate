@@ -215,7 +215,7 @@ grep -q 'No handoff exists for this project yet' "$tmp/home_c/.claude/CLAUDE.md"
 
 # file_multi_handoffs: files each well-formed chunk under its scope, drops
 # unknown ids, reports how many it saved; no delimiters means zero.
-body=$'=== project: sample ===\n## Goal\nA\n=== project: intruder ===\n## Goal\nX\n=== machine ===\n## Goal\nB'
+body=$'=== project: sample ===\n## Goal\nA\n## Done\nA\n## In flight\nA\n## Next steps\nA\n## Gotchas\nA\n=== project: intruder ===\n## Goal\nX\n## Done\nX\n## In flight\nX\n## Next steps\nX\n## Gotchas\nX\n=== machine ===\n## Goal\nB\n## Done\nB\n## In flight\nB\n## Next steps\nB\n## Gotchas\nB'
 [ "$(file_multi_handoffs '2026-03-01T00:00:00Z' 'sample sample2 ' "$body" 2>/dev/null)" = 2 ]
 grep -q 'project=sample ' "$SATCHEL_DIR/sync/projects/sample/handoffs/2026-03-01T00-00-00Z--testbox.md"
 grep -q '^## Goal' "$SATCHEL_DIR/sync/machines/testbox/handoffs/2026-03-01T00-00-00Z.md"
@@ -229,7 +229,7 @@ grep -q '^## Goal' "$SATCHEL_DIR/sync/machines/testbox/handoffs/2026-03-01T00-00
 candidate_tokens=(candidate-1)
 candidate_paths=("$tmp/work/newrepo")
 candidate_identities=(example.com/team/newrepo)
-cbody=$'=== candidate: candidate-1 ===\n## Goal\nCandidate work\n=== machine ===\n## Goal\nOther work'
+cbody=$'=== candidate: candidate-1 ===\n## Goal\nCandidate work\n## Done\nCandidate work\n## In flight\nNone\n## Next steps\nContinue\n## Gotchas\nNone\n=== machine ===\n## Goal\nOther work\n## Done\nOther work\n## In flight\nNone\n## Next steps\nContinue\n## Gotchas\nNone'
 resolve_candidate_handoffs "$cbody"
 grep -q '^=== machine ===' <<< "$RESOLVED_HANDOFF_BODY"
 [ -z "$RESOLVED_PROJECT_IDS" ]
@@ -238,6 +238,24 @@ grep -q '^=== machine ===' <<< "$RESOLVED_HANDOFF_BODY"
 machine_combined="$SATCHEL_DIR/sync/machines/testbox/handoffs/2026-03-03T00-00-00Z.md"
 grep -q 'Candidate work' "$machine_combined"
 grep -q 'Other work' "$machine_combined"
+
+# A failed interactive enrollment must not discard the handoff body or abort
+# the post-session path. Preserve that candidate's work at machine scope.
+(
+  function [ {
+    if builtin [ "${1:-}" = -t ]; then return 0; fi
+    builtin [ "$@"
+  }
+  confirm_yes() { return 0; }
+  enroll_project() { die "simulated enrollment failure"; }
+  candidate_tokens=(candidate-1)
+  candidate_paths=("$tmp/work/newrepo")
+  candidate_identities=(example.com/team/newrepo)
+  resolve_candidate_handoffs $'=== candidate: candidate-1 ===\n## Goal\nPreserve me' 2>/dev/null
+  grep -q '^=== machine ===' <<< "$RESOLVED_HANDOFF_BODY"
+  grep -q 'Preserve me' <<< "$RESOLVED_HANDOFF_BODY"
+  [ -z "$RESOLVED_PROJECT_IDS" ]
+)
 
 # Handoff directories are bounded continuation state, not an incident archive.
 mkdir -p "$SATCHEL_DIR/sync/projects/retained/handoffs"
@@ -323,7 +341,7 @@ timeout() { shift; "$@"; }
 mock_engine() {
   bash -c 'trap -p INT' > "$HANDOFF_SIGNAL_DIR/int"
   bash -c 'trap -p QUIT' > "$HANDOFF_SIGNAL_DIR/quit"
-  printf '## Goal\nVerify handoff signal handling\n'
+  printf '## Goal\nVerify handoff signal handling\n## Done\nDone\n## In flight\nNone\n## Next steps\nContinue\n## Gotchas\nNone\n'
 }
 SATCHEL_HANDOFF_MODEL_CLAUDE=""
 trap '' INT
@@ -333,6 +351,20 @@ grep -Eq "trap -- '' (SIGINT|INT)" "$HANDOFF_SIGNAL_DIR/int"
 grep -Fq 'writing handoff… (Ctrl-\ skips it)' "$HANDOFF_SIGNAL_DIR/stderr"
 trap -p INT | grep -Eq "trap -- '' (SIGINT|INT)"
 trap - INT
+
+# Failed or incomplete writers preserve the previous valid handoff even when
+# their stdout looks partially usable.
+saved_handoff="$(latest_handoff sample)"
+saved_hash="$(git hash-object "$saved_handoff")"
+mock_engine() {
+  printf '## Goal\nPartial despite failure\n## Done\nDone\n## In flight\nNone\n## Next steps\nContinue\n## Gotchas\nNone\n'
+  return 1
+}
+generate_handoff claude sample "$tmp/work/app" >/dev/null 2>&1
+[ "$(git hash-object "$saved_handoff")" = "$saved_hash" ]
+mock_engine() { printf '## Goal\nIncomplete\n'; }
+generate_handoff claude sample "$tmp/work/app" >/dev/null 2>&1
+[ "$(git hash-object "$saved_handoff")" = "$saved_hash" ]
 
 # The runner itself ignores a late INT and lets its isolated writer finish.
 int_writer() {

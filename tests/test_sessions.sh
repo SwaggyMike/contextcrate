@@ -77,6 +77,29 @@ podman_rootless() { return 0; }
 ! (fix_home_ownership "$tmp/work/project-files" 2>/dev/null)
 podman_rootless() { return 1; }
 
+# Ownership detection uses portable find features and stops after the first
+# mismatch instead of silently skipping repair on appliance hosts.
+portable_bin="$tmp/portable-bin"
+repair_engine="$tmp/repair-engine"
+repair_log="$tmp/repair.log"
+real_find="$(command -v find)"
+mkdir -p "$portable_bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'for arg in "$@"; do [ "$arg" != -printf ] || exit 64; done' \
+  'exec "$REAL_FIND" "$@"' > "$portable_bin/find"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$REPAIR_LOG"\n' > "$repair_engine"
+chmod 755 "$portable_bin/find" "$repair_engine"
+old_path="$PATH"
+PATH="$portable_bin:$PATH"
+export PATH REAL_FIND="$real_find" REPAIR_LOG="$repair_log"
+SATCHEL_UID=12345 SATCHEL_GID=12345 ENGINE="$repair_engine"
+fix_home_ownership "$SATCHEL_DIR/home/claude"
+PATH="$old_path"
+export PATH
+SATCHEL_UID=1000 SATCHEL_GID=1000 ENGINE=docker
+grep -q 'chown -R 12345:12345 /satchel-data' "$repair_log"
+
 # Synced registries reject path-special machine entries and malformed MCP
 # records before a session or sync can consume them.
 mkdir -p "$SATCHEL_DIR/sync/machines/..bad"
