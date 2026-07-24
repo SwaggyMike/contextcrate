@@ -14,11 +14,27 @@ printf 'MACHINE=testbox\nSYNC_URL=test\n' > "$SATCHEL_DIR/config"
 # Load functions without invoking main.
 source <(sed '$d' "$repo_dir/satchel")
 load_config
+ENGINE=test-engine
 
 # A real unix socket for the -S check; a stubbed ssh-add controls what the
 # probe sees on it (0 = keys loaded, 1 = empty, 2 = nothing answering).
 eval "$(ssh-agent -a "$tmp/agent.sock")" >/dev/null
 export SSH_AUTH_SOCK="$tmp/agent.sock"
+
+# Automatically loading an unencrypted standard key is a routine success path
+# and must not flash ssh-add's "Identity added" message during every launch.
+mkdir -p "$HOME/.ssh"
+ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
+original_sock="$SSH_AUTH_SOCK"
+original_pid="$SSH_AGENT_PID"
+SSH_STATE=none
+start_temporary_ssh_agent > "$tmp/quiet-ssh-add" 2>&1
+[ ! -s "$tmp/quiet-ssh-add" ]
+stop_temporary_ssh_agent
+export SSH_AUTH_SOCK="$original_sock"
+export SSH_AGENT_PID="$original_pid"
+rm "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_ed25519.pub"
+
 stub="$tmp/bin"; mkdir -p "$stub"; export PATH="$stub:$PATH"
 set_ssh_add_rc() { printf '#!/bin/sh\nexit %s\n' "$1" > "$stub/ssh-add"; chmod +x "$stub/ssh-add"; }
 
@@ -76,6 +92,9 @@ grep -q 'cannot authenticate' <(preamble off)
 
 # Preflight automatically loads standard keys. If none is usable it explains
 # the impact before continuing; ready and opted-out sessions stay calm.
+# Logical state tests use Host mode so a root-run test process does not
+# intentionally replace a root-owned socket with a temporary normal-user one.
+HOST_MODE=1
 set_ssh_add_rc 1
 grep -q 'git push over SSH will not work' <(SSH_STATE=empty ssh_preflight </dev/null 2>&1)
 touch "$HOME/.ssh/id_ed25519"
@@ -92,6 +111,7 @@ start_temporary_ssh_agent() { return 1; }
 grep -q 'git push over SSH will not work' <(SSH_STATE=dead ssh_preflight </dev/null 2>&1)
 [ -z "$(SSH_STATE=ready ssh_preflight 2>&1)" ]
 [ -z "$(SSH_STATE=off ssh_preflight 2>&1)" ]
+HOST_MODE=0
 
 # SSH-home fix: ssh resolves ~ via /etc/passwd, not $HOME, so the image must
 # align the passwd homes of node and root with the mounted agent home. A direct

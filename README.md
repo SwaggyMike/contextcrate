@@ -146,8 +146,9 @@ judgment.)
 Satchel has one Skill Library for both agents and every machine. Inside a
 session it is mounted read-write at `/home/satchel/.claude/skills` for Claude
 or `/home/satchel/.codex/skills` for Codex. The generated session instructions
-identify that path as Satchel-managed, and `SATCHEL_SKILLS_DIR` exposes it to
-installers.
+identify that path as Satchel-managed. `SATCHEL_SESSION=1` identifies the
+runtime, `SATCHEL_SESSION_MODE=host|sandbox` identifies its safety boundary,
+and `SATCHEL_SKILLS_DIR` exposes the shared path to installers.
 
 Ask the agent to install a skill and it writes the complete folder there,
 including `SKILL.md` and any referenced `references/`, `scripts/`, or `assets/`

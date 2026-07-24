@@ -82,8 +82,14 @@ grep -q 'USE PODMAN NOT DOCKER ON TESTBOX' "$tmp/home_c/.claude/CLAUDE.md"
 # remains visible.
 HOST_MODE=0
 [ -z "$(announce_session_mode 2>&1)" ]
+write_memory_file claude "$tmp/home_c" sample "$tmp/work/app" 2>/dev/null
+grep -q 'SATCHEL_SESSION_MODE=sandbox' "$tmp/home_c/.claude/CLAUDE.md"
 HOST_MODE=1
 grep -q 'HOST SESSION' <<< "$(announce_session_mode 2>&1)"
+write_memory_file claude "$tmp/home_c" sample "$tmp/work/app" 2>/dev/null
+grep -q 'SATCHEL_SESSION_MODE=host' "$tmp/home_c/.claude/CLAUDE.md"
+grep -q "machine's filesystem available at /host with its real mount permissions" \
+  "$tmp/home_c/.claude/CLAUDE.md"
 HOST_MODE=0
 
 # --with: extras are validated, normalized, mounted at their real paths,

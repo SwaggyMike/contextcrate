@@ -67,6 +67,24 @@ chmod +x "$podman_like"
 HOST_MODE=0
 WITH_DIRS=()
 
+# Normal and Host Sessions expose their safety boundary mechanically. Helper
+# containers are intentionally excluded from this normal-Session contract.
+compose_run_args codex "$tmp/agent-home" "$tmp/work/app"
+args=" ${RUN_ARGS[*]} "
+[[ "$args" == *" SATCHEL_SESSION=1 "* ]]
+[[ "$args" == *" SATCHEL_SESSION_MODE=sandbox "* ]]
+[[ "$args" != *" SATCHEL_SESSION_MODE=host "* ]]
+[[ "$args" == *" --pid=private "* ]]
+[[ "$args" != *" --pid=host "* ]]
+HOST_MODE=1
+compose_run_args codex "$tmp/agent-home" "$tmp/work/app"
+args=" ${RUN_ARGS[*]} "
+[[ "$args" == *" SATCHEL_SESSION_MODE=host "* ]]
+[[ "$args" != *" SATCHEL_SESSION_MODE=sandbox "* ]]
+[[ "$args" == *" --pid=host "* ]]
+[[ "$args" != *" --pid=private "* ]]
+HOST_MODE=0
+
 # Ownership preparation refuses arbitrary project and host paths even when
 # the selected engine would otherwise make the operation a no-op.
 mkdir -p "$SATCHEL_DIR/home/claude" "$tmp/work/project-files"
@@ -182,7 +200,11 @@ export SATCHEL_TEST_EVENTS="$events"
 
 ensure_image() { :; }
 require_supported_engine_mounts() { :; }
-quiet_pull() { :; }
+startup_order="$tmp/startup-order"
+quiet_pull() {
+  [ -n "${RECORD_STARTUP_ORDER:-}" ] && printf 'pull\n' >> "$startup_order"
+  return 0
+}
 validate_sync_state() { :; }
 ensure_skill_library() { :; }
 repair_skill_library() { :; }
@@ -191,7 +213,10 @@ update_check() { :; }
 refresh_project_paths() { :; }
 project_for_path() { printf 'sample'; }
 materialize_mcp() { printf 'materialize\n' >> "$events"; }
-ssh_preflight() { SSH_STATE=none; }
+ssh_preflight() {
+  [ -n "${RECORD_STARTUP_ORDER:-}" ] && printf 'ssh\n' >> "$startup_order"
+  SSH_STATE=none
+}
 write_memory_file() { mkdir -p "$2/.codex"; printf 'memory\n' >> "$events"; }
 fix_home_ownership() { printf 'ownership:%s\n' "$1" >> "$events"; }
 fix_synced_write_ownership() {
@@ -262,7 +287,13 @@ maybe_offer_baseline() {
 }
 ENGINE=""
 ps -o pgid= -p "$BASHPID" | tr -d ' ' > "$events.session-pgid"
+RECORD_STARTUP_ORDER=1
+export RECORD_STARTUP_ORDER
+: > "$startup_order"
 (cd "$tmp/work/app" && cmd_session codex)
+ssh_line="$(grep -n '^ssh$' "$startup_order" | head -n1 | cut -d: -f1)"
+pull_line="$(grep -n '^pull$' "$startup_order" | head -n1 | cut -d: -f1)"
+[ "$ssh_line" -lt "$pull_line" ]
 first_materialize="$(grep -n '^materialize$' "$events" | head -n1 | cut -d: -f1)"
 first_ownership="$(grep -n '^ownership:' "$events" | head -n1 | cut -d: -f1)"
 run_line="$(grep -n '^run$' "$events" | head -n1 | cut -d: -f1)"

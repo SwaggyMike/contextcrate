@@ -64,13 +64,16 @@ compose_baseline_run_args claude "$tmp/claude"
 [[ " ${RUN_ARGS[*]} " != *" --pid=host "* ]]
 [[ " ${RUN_ARGS[*]} " != *"docker.sock"* ]]
 
-# A codex baseline session gets the registered MCP bearer tokens as env vars —
-# its home carries the same materialized config.toml as ordinary sessions,
-# and codex fails MCP startup when the named env var is missing.
+# A Codex baseline session inherits registered MCP bearer tokens by variable
+# name. The value must never appear in Docker/Podman argv.
 printf '{ "servers": { "homeassistant": { "url": "http://ha.test", "auth": "bearer" } } }\n' > "$SATCHEL_DIR/sync/mcp.json"
 printf 'homeassistant=sekrit\n' > "$SATCHEL_DIR/sync/mcp-tokens.env"
 compose_baseline_run_args codex "$tmp/codex"
-[[ " ${RUN_ARGS[*]} " == *" SATCHEL_MCP_TOKEN_HOMEASSISTANT=sekrit "* ]]
+[[ " ${RUN_ARGS[*]} " == *" -e SATCHEL_MCP_TOKEN_HOMEASSISTANT "* ]]
+[[ " ${RUN_ARGS[*]} " != *"sekrit"* ]]
+[ "$SATCHEL_MCP_TOKEN_HOMEASSISTANT" = sekrit ]
+clear_codex_mcp_env
+[ -z "${SATCHEL_MCP_TOKEN_HOMEASSISTANT+x}" ]
 
 old="$tmp/old" new="$tmp/new"
 printf '# Notes\n- hostname: testbox\n' > "$old"

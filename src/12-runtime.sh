@@ -107,7 +107,7 @@ start_temporary_ssh_agent() {
   SSH_AUTH_SOCK="$sock"
   export SSH_AUTH_SOCK
   rc=0
-  ssh-add "${keys[@]}" || rc=$?
+  ssh-add -q "${keys[@]}" || rc=$?
   if [ "$rc" -eq 0 ]; then
     # Root-run hosts launch normal sessions as SATCHEL_UID. This socket belongs
     # only to the current session, so grant that exact user access to it.
@@ -174,7 +174,7 @@ ssh_preflight() {
     empty)
       if [ ${#keys[@]} -gt 0 ]; then
         rc=0
-        ssh-add "${keys[@]}" || rc=$?
+        ssh-add -q "${keys[@]}" || rc=$?
         [ "$rc" -eq 130 ] && return 130
         if [ "$rc" -eq 0 ]; then
           SSH_STATE=ready

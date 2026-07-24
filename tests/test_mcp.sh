@@ -7,9 +7,10 @@ trap 'rm -rf "$tmp"' EXIT
 
 export HOME="$tmp/home"
 export SATCHEL_DIR="$tmp/state"
-mkdir -p "$HOME" "$SATCHEL_DIR/sync/.git"
+mkdir -p "$HOME" "$SATCHEL_DIR/sync/.git" "$tmp/agent-home/.codex"
 printf 'MACHINE=testbox\nSYNC_URL=test\n' > "$SATCHEL_DIR/config"
 
+# Load functions without invoking main.
 source <(sed '$d' "$repo_dir/satchel")
 load_config
 
@@ -55,5 +56,74 @@ cp "$codex_home/.codex/config.toml" "$tmp/config-before"
 ! (materialize_mcp codex "$codex_home" 2>/dev/null)
 cmp "$tmp/config-before" "$codex_home/.codex/config.toml"
 [ ! -e "$codex_home/.codex/config.toml.tmp" ]
+[ ! -e "$codex_home/.codex/config.toml.rescued" ]
+[ ! -e "$codex_home/.codex/config.toml.new" ]
 
-printf 'ok: MCP validation and materialization\n'
+printf '{"servers":{"homeassistant":{"url":"https://ha.example.test/api/mcp","auth":"none"}}}\n' \
+  > "$MCP_FILE"
+
+# Codex persists settings it learns during a session immediately before a
+# trailing comment. When Satchel's managed marker is the final comment, those
+# settings can land inside the managed block. Re-materialization must rescue
+# them rather than deleting project trust and per-tool approval choices.
+cat > "$tmp/agent-home/.codex/config.toml" <<'EOF'
+model = "test-model"
+# >>> satchel mcp >>>
+# managed by satchel — rebuilt every session start
+[mcp_servers.homeassistant]
+url = "https://old.example.test/api/mcp"
+
+[mcp_servers.homeassistant.tools.todo_get_items]
+approval_mode = "approve"
+
+[projects."/work/project"]
+trust_level = "trusted"
+# <<< satchel mcp <<<
+EOF
+
+materialize_mcp codex "$tmp/agent-home"
+cfg="$tmp/agent-home/.codex/config.toml"
+
+[ "$(grep -c '^# >>> satchel mcp >>>$' "$cfg")" -eq 1 ]
+[ "$(grep -c '^# <<< satchel mcp <<<$' "$cfg")" -eq 1 ]
+[ "$(grep -c '^url = "https://ha.example.test/api/mcp"$' "$cfg")" -eq 1 ]
+grep -q '^\[mcp_servers\.homeassistant\.tools\.todo_get_items\]$' "$cfg"
+grep -q '^approval_mode = "approve"$' "$cfg"
+grep -q '^\[projects\."/work/project"\]$' "$cfg"
+grep -q '^trust_level = "trusted"$' "$cfg"
+
+close_line="$(grep -n '^# <<< satchel mcp <<<$' "$cfg" | cut -d: -f1)"
+tool_line="$(grep -n '^\[mcp_servers\.homeassistant\.tools\.todo_get_items\]$' "$cfg" | cut -d: -f1)"
+project_line="$(grep -n '^\[projects\."/work/project"\]$' "$cfg" | cut -d: -f1)"
+[ "$close_line" -lt "$tool_line" ]
+[ "$close_line" -lt "$project_line" ]
+
+cp "$cfg" "$tmp/once.toml"
+materialize_mcp codex "$tmp/agent-home"
+cmp -s "$tmp/once.toml" "$cfg"
+
+# Bearer values enter Codex through inherited variables by name, never through
+# the container engine's process arguments. A local token still overrides sync.
+printf '{"servers":{"homeassistant":{"url":"https://ha.example.test/api/mcp","auth":"bearer"}}}\n' \
+  > "$MCP_FILE"
+printf 'homeassistant=synced-secret\n' > "$SYNC_TOKENS_FILE"
+RUN_ARGS=()
+compose_codex_mcp_env
+args=" ${RUN_ARGS[*]} "
+[[ "$args" == *" -e SATCHEL_MCP_TOKEN_HOMEASSISTANT "* ]]
+[[ "$args" != *"synced-secret"* ]]
+[ "$SATCHEL_MCP_TOKEN_HOMEASSISTANT" = synced-secret ]
+
+printf 'homeassistant=local-secret\n' > "$LOCAL_TOKENS_FILE"
+RUN_ARGS=()
+compose_codex_mcp_env
+[[ " ${RUN_ARGS[*]} " != *"local-secret"* ]]
+[ "$SATCHEL_MCP_TOKEN_HOMEASSISTANT" = local-secret ]
+
+rm -f "$LOCAL_TOKENS_FILE" "$SYNC_TOKENS_FILE"
+RUN_ARGS=()
+compose_codex_mcp_env
+[ -z "${SATCHEL_MCP_TOKEN_HOMEASSISTANT+x}" ]
+[[ " ${RUN_ARGS[*]} " != *" SATCHEL_MCP_TOKEN_HOMEASSISTANT "* ]]
+
+printf 'ok: MCP validation, materialization, and runtime env secrecy\n'

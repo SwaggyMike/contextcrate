@@ -33,6 +33,7 @@ for agent in claude codex; do
   compose_run_args "$agent" "$agent_home" "$tmp/work"
   args=" ${RUN_ARGS[*]} "
   [[ "$args" == *" SATCHEL_SESSION=1 "* ]]
+  [[ "$args" == *" SATCHEL_SESSION_MODE=sandbox "* ]]
   [[ "$args" == *" $SATCHEL_DIR/sync/skills/shared:$skills_dir "* ]]
   [[ "$args" == *" SATCHEL_SKILLS_DIR=$skills_dir "* ]]
 
@@ -179,6 +180,7 @@ SYNC_URL=""
 compose_run_args codex "$tmp/home_unsynced" "$tmp/work"
 args=" ${RUN_ARGS[*]} "
 [[ "$args" == *" SATCHEL_SESSION=1 "* ]]
+[[ "$args" == *" SATCHEL_SESSION_MODE=sandbox "* ]]
 [[ "$args" != *" SATCHEL_SKILLS_DIR="* ]]
 write_memory_file codex "$tmp/home_unsynced" "" "$tmp/work"
 ! grep -q '^## Satchel Skill Library$' "$tmp/home_unsynced/.codex/AGENTS.md"

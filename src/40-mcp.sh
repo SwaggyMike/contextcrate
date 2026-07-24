@@ -3,6 +3,7 @@
 
 MCP_FILE="$SYNC_DIR/mcp.json"
 SYNC_TOKENS_FILE="$SYNC_DIR/mcp-tokens.env"
+MCP_RUNTIME_ENV_NAMES=()
 
 mcp_name_valid() {
   [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]
@@ -93,15 +94,29 @@ mcp_env_name() { # mcp_env_name <server-name> → SATCHEL_MCP_TOKEN_<NAME>
   printf 'SATCHEL_MCP_TOKEN_%s' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
 }
 
-# This is where codex's MCP tokens actually enter the container. Every codex
-# session needs it — including the baseline session, whose home carries the
-# same materialized config.toml; without the env vars codex warns
-# "MCP startup failed" for each bearer-auth server.
+# Remove the short-lived variables exported for Docker/Podman inheritance.
+clear_codex_mcp_env() {
+  local name
+  for name in "${MCP_RUNTIME_ENV_NAMES[@]}"; do unset "$name"; done
+  MCP_RUNTIME_ENV_NAMES=()
+}
+
+# Passing NAME=value directly to Docker/Podman discloses bearer tokens in the
+# host process list. Export the value in Satchel's launch process and give the
+# engine only -e NAME; each separate Satchel process owns its variables, so
+# concurrent sessions cannot overwrite one another.
 compose_codex_mcp_env() { # appends to RUN_ARGS
-  local n t
+  local n t name
+  clear_codex_mcp_env
   while IFS= read -r n; do
     t="$(token_for "$n")"
-    if [ -n "$t" ]; then RUN_ARGS+=(-e "$(mcp_env_name "$n")=$t"); fi
+    if [ -n "$t" ]; then
+      name="$(mcp_env_name "$n")"
+      printf -v "$name" '%s' "$t"
+      export "$name"
+      MCP_RUNTIME_ENV_NAMES+=("$name")
+      RUN_ARGS+=(-e "$name")
+    fi
   done < <(mcp_names)
 }
 
@@ -198,7 +213,9 @@ prompt_token() { # ADR 0002: offer synced (default) or local-only storage
 # home. The registry is the source of truth: the managed section is rebuilt
 # every session start. Claude takes tokens inline in .claude.json; codex only
 # takes an env var name (bearer_token_env_var), so the session passes the
-# token through the environment. Either way nothing here ever syncs.
+# token through an inherited environment variable whose value is absent from
+# container-engine argv. Either way the agent-native materialization never
+# syncs.
 materialize_mcp() {
   local agent="$1" home="$2"
   [ -f "$MCP_FILE" ] || return 0
@@ -237,28 +254,46 @@ materialize_mcp() {
       ;;
     codex)
       # The managed block is rebuilt each session; everything outside it is
-      # untouched.
+      # untouched. Codex writes learned project trust and per-tool approval
+      # tables immediately before a trailing comment, which can put them
+      # inside our marker when it ends the file. Rescue any non-base table
+      # found there, then place the managed block before the first table so
+      # future Codex-owned tables stay outside it.
       local cfg="$home/.codex/config.toml"
       mkdir -p "$home/.codex"
       touch "$cfg"
-      if ! awk '
+      : > "$cfg.rescued"
+      if ! awk -v rescued="$cfg.rescued" '
         $0 == "# >>> satchel mcp >>>" {
           if (opened || inside) exit 2
-          opened=1; inside=1; next
+          opened=1; inside=1; keep=0; next
         }
         $0 == "# <<< satchel mcp <<<" {
           if (!inside || closed) exit 2
-          closed=1; inside=0; next
+          closed=1; inside=0; keep=0; next
         }
-        !inside { print }
+        inside {
+          if ($0 ~ /^\[mcp_servers\.[A-Za-z0-9_-]+\][[:space:]]*$/) {
+            keep=0; next
+          }
+          if ($0 ~ /^\[/) keep=1
+          if (keep) print > rescued
+          next
+        }
+        { print }
         END { if (inside || opened != closed) exit 2 }
       ' "$cfg" > "$cfg.tmp"; then
-        rm -f "$cfg.tmp"
+        rm -f "$cfg.tmp" "$cfg.rescued"
         die "Codex config has malformed Satchel MCP markers; leaving it unchanged: $cfg"
       fi
-      printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s# <<< satchel mcp <<<\n' "$block" \
-        >> "$cfg.tmp"
-      mv -f "$cfg.tmp" "$cfg"
+      {
+        awk '/^\[/{ exit } { print }' "$cfg.tmp"
+        printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s# <<< satchel mcp <<<\n' "$block"
+        awk 'seen || /^\[/{ seen=1; print }' "$cfg.tmp"
+        cat "$cfg.rescued"
+      } > "$cfg.new"
+      mv -f "$cfg.new" "$cfg"
+      rm -f "$cfg.tmp" "$cfg.rescued"
       ;;
   esac
 }

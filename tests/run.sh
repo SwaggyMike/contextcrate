@@ -4,7 +4,7 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
-for required_command in git jq ssh-agent; do
+for required_command in git jq ssh-add ssh-agent ssh-keygen; do
   command -v "$required_command" >/dev/null \
     || { printf 'missing test dependency: %s\n' "$required_command" >&2; exit 1; }
 done
@@ -13,6 +13,7 @@ bash scripts/build.sh --check
 bash -n satchel
 bash -n install.sh
 bash -n scripts/build.sh
+bash -n scripts/session-smoke.sh
 for source_file in src/[0-9][0-9]-*.sh; do
   bash -n "$source_file"
 done

@@ -147,6 +147,9 @@ prepare_baseline_home() { # repair files a previous root Host Session may have l
 
 run_machine_baseline() { # run_machine_baseline <agent> <home>
   local agent="$1" home="$2" inventory machine before prompt rc=0
+  # Compose exports Codex's short-lived MCP variables and may create mount
+  # roots. Repair ownership afterward at the final host-side write boundary.
+  compose_baseline_run_args "$agent" "$home"
   prepare_baseline_home "$home"
   machine="$(machine_dir)"; inventory="$(baseline_inventory_file)"
   mkdir -p "$machine"
@@ -166,7 +169,6 @@ Use an initial structure of Identity and OS, Hardware, Storage and filesystems, 
 Unfinished task state belongs in handoffs, project behavior belongs in that project's own documentation, and resolved one-time incidents belong nowhere. Preserve correct existing notes and guides, update verified stale facts, and delete obsolete or incident-only material during a refresh. Do not modify projects.json or handoffs.
 
 Never record passwords, tokens, keys, cookies, complete environment dumps, credential-bearing URLs, or secret values. Do not paste raw command output."
-  compose_baseline_run_args "$agent" "$home"
   local tty=() launch
   [ -t 0 ] && tty=(-it)
   case "$agent" in
@@ -175,6 +177,7 @@ Never record passwords, tokens, keys, cookies, complete environment dumps, crede
   esac
   warn "BASELINE INSPECTION - the real machine is visible at /host read-only; only the synced machine-knowledge directory is writable"
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" || rc=$?
+  clear_codex_mcp_env
 
   if [ "$rc" -ne 0 ]; then
     warn "baseline agent exited with status $rc; machine baseline did not complete"

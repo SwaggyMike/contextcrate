@@ -610,7 +610,7 @@ start_temporary_ssh_agent() {
   SSH_AUTH_SOCK="$sock"
   export SSH_AUTH_SOCK
   rc=0
-  ssh-add "${keys[@]}" || rc=$?
+  ssh-add -q "${keys[@]}" || rc=$?
   if [ "$rc" -eq 0 ]; then
     # Root-run hosts launch normal sessions as SATCHEL_UID. This socket belongs
     # only to the current session, so grant that exact user access to it.
@@ -677,7 +677,7 @@ ssh_preflight() {
     empty)
       if [ ${#keys[@]} -gt 0 ]; then
         rc=0
-        ssh-add "${keys[@]}" || rc=$?
+        ssh-add -q "${keys[@]}" || rc=$?
         [ "$rc" -eq 130 ] && return 130
         if [ "$rc" -eq 0 ]; then
           SSH_STATE=ready
@@ -1122,6 +1122,7 @@ DOCKERFILE
 
 MCP_FILE="$SYNC_DIR/mcp.json"
 SYNC_TOKENS_FILE="$SYNC_DIR/mcp-tokens.env"
+MCP_RUNTIME_ENV_NAMES=()
 
 mcp_name_valid() {
   [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]
@@ -1212,15 +1213,29 @@ mcp_env_name() { # mcp_env_name <server-name> → SATCHEL_MCP_TOKEN_<NAME>
   printf 'SATCHEL_MCP_TOKEN_%s' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
 }
 
-# This is where codex's MCP tokens actually enter the container. Every codex
-# session needs it — including the baseline session, whose home carries the
-# same materialized config.toml; without the env vars codex warns
-# "MCP startup failed" for each bearer-auth server.
+# Remove the short-lived variables exported for Docker/Podman inheritance.
+clear_codex_mcp_env() {
+  local name
+  for name in "${MCP_RUNTIME_ENV_NAMES[@]}"; do unset "$name"; done
+  MCP_RUNTIME_ENV_NAMES=()
+}
+
+# Passing NAME=value directly to Docker/Podman discloses bearer tokens in the
+# host process list. Export the value in Satchel's launch process and give the
+# engine only -e NAME; each separate Satchel process owns its variables, so
+# concurrent sessions cannot overwrite one another.
 compose_codex_mcp_env() { # appends to RUN_ARGS
-  local n t
+  local n t name
+  clear_codex_mcp_env
   while IFS= read -r n; do
     t="$(token_for "$n")"
-    if [ -n "$t" ]; then RUN_ARGS+=(-e "$(mcp_env_name "$n")=$t"); fi
+    if [ -n "$t" ]; then
+      name="$(mcp_env_name "$n")"
+      printf -v "$name" '%s' "$t"
+      export "$name"
+      MCP_RUNTIME_ENV_NAMES+=("$name")
+      RUN_ARGS+=(-e "$name")
+    fi
   done < <(mcp_names)
 }
 
@@ -1317,7 +1332,9 @@ prompt_token() { # ADR 0002: offer synced (default) or local-only storage
 # home. The registry is the source of truth: the managed section is rebuilt
 # every session start. Claude takes tokens inline in .claude.json; codex only
 # takes an env var name (bearer_token_env_var), so the session passes the
-# token through the environment. Either way nothing here ever syncs.
+# token through an inherited environment variable whose value is absent from
+# container-engine argv. Either way the agent-native materialization never
+# syncs.
 materialize_mcp() {
   local agent="$1" home="$2"
   [ -f "$MCP_FILE" ] || return 0
@@ -1356,28 +1373,46 @@ materialize_mcp() {
       ;;
     codex)
       # The managed block is rebuilt each session; everything outside it is
-      # untouched.
+      # untouched. Codex writes learned project trust and per-tool approval
+      # tables immediately before a trailing comment, which can put them
+      # inside our marker when it ends the file. Rescue any non-base table
+      # found there, then place the managed block before the first table so
+      # future Codex-owned tables stay outside it.
       local cfg="$home/.codex/config.toml"
       mkdir -p "$home/.codex"
       touch "$cfg"
-      if ! awk '
+      : > "$cfg.rescued"
+      if ! awk -v rescued="$cfg.rescued" '
         $0 == "# >>> satchel mcp >>>" {
           if (opened || inside) exit 2
-          opened=1; inside=1; next
+          opened=1; inside=1; keep=0; next
         }
         $0 == "# <<< satchel mcp <<<" {
           if (!inside || closed) exit 2
-          closed=1; inside=0; next
+          closed=1; inside=0; keep=0; next
         }
-        !inside { print }
+        inside {
+          if ($0 ~ /^\[mcp_servers\.[A-Za-z0-9_-]+\][[:space:]]*$/) {
+            keep=0; next
+          }
+          if ($0 ~ /^\[/) keep=1
+          if (keep) print > rescued
+          next
+        }
+        { print }
         END { if (inside || opened != closed) exit 2 }
       ' "$cfg" > "$cfg.tmp"; then
-        rm -f "$cfg.tmp"
+        rm -f "$cfg.tmp" "$cfg.rescued"
         die "Codex config has malformed Satchel MCP markers; leaving it unchanged: $cfg"
       fi
-      printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s# <<< satchel mcp <<<\n' "$block" \
-        >> "$cfg.tmp"
-      mv -f "$cfg.tmp" "$cfg"
+      {
+        awk '/^\[/{ exit } { print }' "$cfg.tmp"
+        printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s# <<< satchel mcp <<<\n' "$block"
+        awk 'seen || /^\[/{ seen=1; print }' "$cfg.tmp"
+        cat "$cfg.rescued"
+      } > "$cfg.new"
+      mv -f "$cfg.new" "$cfg"
+      rm -f "$cfg.tmp" "$cfg.rescued"
       ;;
   esac
 }
@@ -1652,7 +1687,8 @@ cmd_skills() {
 # /etc belongs to a disposable container, or that a Host Session's real /etc
 # lives under /host.
 write_memory_file() { # write_memory_file <agent> <home> <slug> <project>
-  local agent="$1" home="$2" slug="$3" project="$4" target handoff from w context="" skills_dir
+  local agent="$1" home="$2" slug="$3" project="$4" target handoff from w context="" skills_dir session_mode=sandbox
+  [ "$HOST_MODE" -eq 1 ] && session_mode=host
   case "$agent" in
     claude) target="$home/.claude/CLAUDE.md" ;;
     codex)  target="$home/.codex/AGENTS.md" ;;
@@ -1676,11 +1712,12 @@ write_memory_file() { # write_memory_file <agent> <home> <slug> <project>
     if [ "$HOST_MODE" -eq 1 ]; then
       cat <<'EOF'
 This is a Satchel Host Session: you run as root in a container with the real
-machine's filesystem mounted read-write at /host. The container's own system
-directories (/etc, /usr, /var, ...) belong to the disposable container, NOT
-to the machine. When the user names an absolute path outside the project
-(e.g. /etc/fstab), they mean the machine's file — read and edit it at
-/host/etc/fstab. Anything you change under /host changes the real machine.
+machine's filesystem available at /host with its real mount permissions. The
+container's own system directories (/etc, /usr, /var, ...) belong to the
+disposable container, NOT to the machine. When the user names an absolute path
+outside the project (e.g. /etc/fstab), they mean the machine's file — read and
+edit it at /host/etc/fstab. A change successfully made under /host changes the
+real machine.
 EOF
     else
       cat <<EOF
@@ -1737,8 +1774,9 @@ directly under $skills_dir. Preserve the whole bundle — \`SKILL.md\` and every
 referenced \`references/\`, \`scripts/\`, and \`assets/\` file. Do not install a
 second copy elsewhere or use a generic agent-only destination. Do not leave a
 nested \`.git\` directory in a skill; download/copy the complete working tree
-without repository metadata. The runtime also exposes \`SATCHEL_SESSION=1\` and
-\`SATCHEL_SKILLS_DIR=$skills_dir\` so installers can detect this contract.
+without repository metadata. The runtime also exposes \`SATCHEL_SESSION=1\`,
+\`SATCHEL_SESSION_MODE=$session_mode\`, and \`SATCHEL_SKILLS_DIR=$skills_dir\`
+so installers can detect this contract.
 
 Satchel pulled the Sync Repo before this session and commits and pushes Skill
 Library changes when the session exits, even when no handoff is written. It
@@ -2496,6 +2534,9 @@ prepare_baseline_home() { # repair files a previous root Host Session may have l
 
 run_machine_baseline() { # run_machine_baseline <agent> <home>
   local agent="$1" home="$2" inventory machine before prompt rc=0
+  # Compose exports Codex's short-lived MCP variables and may create mount
+  # roots. Repair ownership afterward at the final host-side write boundary.
+  compose_baseline_run_args "$agent" "$home"
   prepare_baseline_home "$home"
   machine="$(machine_dir)"; inventory="$(baseline_inventory_file)"
   mkdir -p "$machine"
@@ -2515,7 +2556,6 @@ Use an initial structure of Identity and OS, Hardware, Storage and filesystems, 
 Unfinished task state belongs in handoffs, project behavior belongs in that project's own documentation, and resolved one-time incidents belong nowhere. Preserve correct existing notes and guides, update verified stale facts, and delete obsolete or incident-only material during a refresh. Do not modify projects.json or handoffs.
 
 Never record passwords, tokens, keys, cookies, complete environment dumps, credential-bearing URLs, or secret values. Do not paste raw command output."
-  compose_baseline_run_args "$agent" "$home"
   local tty=() launch
   [ -t 0 ] && tty=(-it)
   case "$agent" in
@@ -2524,6 +2564,7 @@ Never record passwords, tokens, keys, cookies, complete environment dumps, crede
   esac
   warn "BASELINE INSPECTION - the real machine is visible at /host read-only; only the synced machine-knowledge directory is writable"
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" || rc=$?
+  clear_codex_mcp_env
 
   if [ "$rc" -ne 0 ]; then
     warn "baseline agent exited with status $rc; machine baseline did not complete"
@@ -2643,12 +2684,14 @@ compose_clipboard_args() { # appends to RUN_ARGS
 }
 
 compose_run_args() { # compose_run_args <agent> <home> <project>
-  local agent="$1" home="$2" project="$3" skills_dir
+  local agent="$1" home="$2" project="$3" skills_dir session_mode=sandbox
+  [ "$HOST_MODE" -eq 1 ] && session_mode=host
   skills_dir="$(session_skills_dir "$agent")"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
   # throwaway container can only fail or evaporate — 'satchel update' is the way.
   RUN_ARGS=(--label "$MANAGED_CONTAINER_LABEL" -e HOME=/home/satchel
-    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1 -e SATCHEL_SESSION=1)
+    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1
+    -e SATCHEL_SESSION=1 -e "SATCHEL_SESSION_MODE=$session_mode")
   RUN_ARGS+=(-v "$home:/home/satchel")
   # Machine Notes: durable facts about this machine, curated by agents
   # mid-session (same mechanism as the Skill Library - rw mount, synced by
@@ -2702,7 +2745,7 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     # the host's — the host's own init reaps zombies instead.
     RUN_ARGS+=(--privileged --pid=host --network=host --user 0:0 -v /:/host)
   else
-    RUN_ARGS+=(--init --user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
+    RUN_ARGS+=(--init --pid=private --user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
     if selinux_active; then RUN_ARGS+=(--security-opt label=disable); fi
     # keep-id invents a passwd entry when SATCHEL_UID is absent from the image
   # (custom UIDs); template its home to the agent home so ssh agrees with
@@ -2880,6 +2923,21 @@ cmd_session() {
   if ! sync_ready; then
     warn "sync is not set up (run 'satchel init') — session is sandboxed but nothing will sync"
   fi
+
+  # Prepare SSH before the first Sync Repo network operation. Otherwise an
+  # empty desktop agent makes quiet_pull warn, then gets its standard key
+  # loaded moments later for the session — a misleading startup failure.
+  # Install cleanup first so Ctrl-C during a passphrase prompt cannot leave a
+  # temporary agent behind.
+  trap 'stop_temporary_ssh_agent' EXIT
+  ssh_preflight || return $?
+  local temporary_agent=0
+  if [ -n "$TEMP_SSH_AGENT_PID" ]; then
+    temporary_agent=1
+  else
+    trap - EXIT
+  fi
+
   quiet_pull || return $?
   if sync_ready; then
     validate_sync_state
@@ -2911,27 +2969,17 @@ cmd_session() {
   [ ! -f "$home/.gitconfig" ] && [ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$home/.gitconfig"
 
   materialize_mcp "$agent" "$home"
-  # Probe the ssh-agent once, before anything reads SSH_STATE: the launch
-  # warning and the memory-file preamble must describe the same agent.
-  # Install cleanup first so Ctrl-C during a passphrase prompt cannot leave a
-  # temporary agent behind.
-  trap 'stop_temporary_ssh_agent' EXIT
-  ssh_preflight || return $?
-  local temporary_agent=0
-  if [ -n "$TEMP_SSH_AGENT_PID" ]; then
-    temporary_agent=1
-  else
-    trap - EXIT
-  fi
   # Written even without sync: the "where you are running" note must reach
   # the agent regardless; latest_handoff just finds nothing in that case.
   write_memory_file "$agent" "$home" "$slug" "$project"
 
+  # Compose exports Codex's short-lived MCP variables and may create missing
+  # shared mount roots. Do it before the final ownership boundary.
+  compose_run_args "$agent" "$home" "$project"
   # This is the final host-side write boundary before the agent starts.
-  # Root-run hosts may have just materialized config and memory as root.
+  # Root-run hosts may have just materialized config, memory, and mount roots.
   fix_home_ownership "$home"
   fix_synced_write_ownership
-  compose_run_args "$agent" "$home" "$project"
   local tty=() ; [ -t 0 ] && tty=(-it)
   announce_session_mode
 
@@ -2960,6 +3008,7 @@ cmd_session() {
   local rc=0
   trap ':' INT
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
+  clear_codex_mcp_env
   # After the interactive engine exits, ignore INT instead of merely catching
   # it. Noninteractive durable cleanup also runs in separate process groups
   # because Docker and Git install signal handlers of their own.

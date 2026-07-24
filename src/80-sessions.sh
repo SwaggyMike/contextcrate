@@ -40,12 +40,14 @@ compose_clipboard_args() { # appends to RUN_ARGS
 }
 
 compose_run_args() { # compose_run_args <agent> <home> <project>
-  local agent="$1" home="$2" project="$3" skills_dir
+  local agent="$1" home="$2" project="$3" skills_dir session_mode=sandbox
+  [ "$HOST_MODE" -eq 1 ] && session_mode=host
   skills_dir="$(session_skills_dir "$agent")"
   # DISABLE_AUTOUPDATER: agent CLIs live in the image; self-updates in a
   # throwaway container can only fail or evaporate — 'satchel update' is the way.
   RUN_ARGS=(--label "$MANAGED_CONTAINER_LABEL" -e HOME=/home/satchel
-    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1 -e SATCHEL_SESSION=1)
+    -e "TERM=${TERM:-xterm-256color}" -e DISABLE_AUTOUPDATER=1
+    -e SATCHEL_SESSION=1 -e "SATCHEL_SESSION_MODE=$session_mode")
   RUN_ARGS+=(-v "$home:/home/satchel")
   # Machine Notes: durable facts about this machine, curated by agents
   # mid-session (same mechanism as the Skill Library - rw mount, synced by
@@ -99,7 +101,7 @@ compose_run_args() { # compose_run_args <agent> <home> <project>
     # the host's — the host's own init reaps zombies instead.
     RUN_ARGS+=(--privileged --pid=host --network=host --user 0:0 -v /:/host)
   else
-    RUN_ARGS+=(--init --user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
+    RUN_ARGS+=(--init --pid=private --user "$SATCHEL_UID:$SATCHEL_GID" --cap-drop ALL --security-opt no-new-privileges)
     if selinux_active; then RUN_ARGS+=(--security-opt label=disable); fi
     # keep-id invents a passwd entry when SATCHEL_UID is absent from the image
   # (custom UIDs); template its home to the agent home so ssh agrees with
@@ -277,6 +279,21 @@ cmd_session() {
   if ! sync_ready; then
     warn "sync is not set up (run 'satchel init') — session is sandboxed but nothing will sync"
   fi
+
+  # Prepare SSH before the first Sync Repo network operation. Otherwise an
+  # empty desktop agent makes quiet_pull warn, then gets its standard key
+  # loaded moments later for the session — a misleading startup failure.
+  # Install cleanup first so Ctrl-C during a passphrase prompt cannot leave a
+  # temporary agent behind.
+  trap 'stop_temporary_ssh_agent' EXIT
+  ssh_preflight || return $?
+  local temporary_agent=0
+  if [ -n "$TEMP_SSH_AGENT_PID" ]; then
+    temporary_agent=1
+  else
+    trap - EXIT
+  fi
+
   quiet_pull || return $?
   if sync_ready; then
     validate_sync_state
@@ -308,27 +325,17 @@ cmd_session() {
   [ ! -f "$home/.gitconfig" ] && [ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$home/.gitconfig"
 
   materialize_mcp "$agent" "$home"
-  # Probe the ssh-agent once, before anything reads SSH_STATE: the launch
-  # warning and the memory-file preamble must describe the same agent.
-  # Install cleanup first so Ctrl-C during a passphrase prompt cannot leave a
-  # temporary agent behind.
-  trap 'stop_temporary_ssh_agent' EXIT
-  ssh_preflight || return $?
-  local temporary_agent=0
-  if [ -n "$TEMP_SSH_AGENT_PID" ]; then
-    temporary_agent=1
-  else
-    trap - EXIT
-  fi
   # Written even without sync: the "where you are running" note must reach
   # the agent regardless; latest_handoff just finds nothing in that case.
   write_memory_file "$agent" "$home" "$slug" "$project"
 
+  # Compose exports Codex's short-lived MCP variables and may create missing
+  # shared mount roots. Do it before the final ownership boundary.
+  compose_run_args "$agent" "$home" "$project"
   # This is the final host-side write boundary before the agent starts.
-  # Root-run hosts may have just materialized config and memory as root.
+  # Root-run hosts may have just materialized config, memory, and mount roots.
   fix_home_ownership "$home"
   fix_synced_write_ownership
-  compose_run_args "$agent" "$home" "$project"
   local tty=() ; [ -t 0 ] && tty=(-it)
   announce_session_mode
 
@@ -357,6 +364,7 @@ cmd_session() {
   local rc=0
   trap ':' INT
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
+  clear_codex_mcp_env
   # After the interactive engine exits, ignore INT instead of merely catching
   # it. Noninteractive durable cleanup also runs in separate process groups
   # because Docker and Git install signal handlers of their own.

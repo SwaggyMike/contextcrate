@@ -50,5 +50,5 @@ An optional first inventory, offered on the first normal agent launch after that
 _Avoid_: journal, log (notes are kept short and current, not appended forever)
 
 **Host Session**:
-A session with sandboxing deliberately off: the host's `/` mounted read-write, root inside the container, host PID namespace. Invoked by explicit flag (`--host`), or by answering yes when satchel refuses a sandboxed session in a home directory or `/`. The container is packaging, not protection.
+A session with sandboxing deliberately off: the host's `/` mounted at `/host` with its real mount permissions, root inside the container, host PID namespace. Invoked by explicit flag (`--host`), or by answering yes when satchel refuses a sandboxed session in a home directory or `/`. The container is packaging, not protection.
 _Avoid_: privileged mode, admin mode

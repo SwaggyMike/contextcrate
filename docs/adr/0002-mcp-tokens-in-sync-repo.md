@@ -12,3 +12,7 @@ The point of the MCP Registry is "register a server once, every machine is preco
 
 - Removed/rotated tokens persist in git history; users who care should rotate at the source.
 - The opt-out must stay a one-liner (gitignore + prompt-on-missing), or this decision should be revisited.
+- Codex names bearer-token environment variables in `config.toml`. Satchel
+  exports each value only in its launch process and gives Docker/Podman
+  `-e NAME`, never `-e NAME=value`, so token values do not appear in the host
+  process list. The short-lived variables are cleared when the engine returns.

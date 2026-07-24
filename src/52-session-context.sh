@@ -1,5 +1,6 @@
 write_memory_file() { # write_memory_file <agent> <home> <slug> <project>
-  local agent="$1" home="$2" slug="$3" project="$4" target handoff from w context="" skills_dir
+  local agent="$1" home="$2" slug="$3" project="$4" target handoff from w context="" skills_dir session_mode=sandbox
+  [ "$HOST_MODE" -eq 1 ] && session_mode=host
   case "$agent" in
     claude) target="$home/.claude/CLAUDE.md" ;;
     codex)  target="$home/.codex/AGENTS.md" ;;
@@ -23,11 +24,12 @@ write_memory_file() { # write_memory_file <agent> <home> <slug> <project>
     if [ "$HOST_MODE" -eq 1 ]; then
       cat <<'EOF'
 This is a Satchel Host Session: you run as root in a container with the real
-machine's filesystem mounted read-write at /host. The container's own system
-directories (/etc, /usr, /var, ...) belong to the disposable container, NOT
-to the machine. When the user names an absolute path outside the project
-(e.g. /etc/fstab), they mean the machine's file — read and edit it at
-/host/etc/fstab. Anything you change under /host changes the real machine.
+machine's filesystem available at /host with its real mount permissions. The
+container's own system directories (/etc, /usr, /var, ...) belong to the
+disposable container, NOT to the machine. When the user names an absolute path
+outside the project (e.g. /etc/fstab), they mean the machine's file — read and
+edit it at /host/etc/fstab. A change successfully made under /host changes the
+real machine.
 EOF
     else
       cat <<EOF
@@ -84,8 +86,9 @@ directly under $skills_dir. Preserve the whole bundle — \`SKILL.md\` and every
 referenced \`references/\`, \`scripts/\`, and \`assets/\` file. Do not install a
 second copy elsewhere or use a generic agent-only destination. Do not leave a
 nested \`.git\` directory in a skill; download/copy the complete working tree
-without repository metadata. The runtime also exposes \`SATCHEL_SESSION=1\` and
-\`SATCHEL_SKILLS_DIR=$skills_dir\` so installers can detect this contract.
+without repository metadata. The runtime also exposes \`SATCHEL_SESSION=1\`,
+\`SATCHEL_SESSION_MODE=$session_mode\`, and \`SATCHEL_SKILLS_DIR=$skills_dir\`
+so installers can detect this contract.
 
 Satchel pulled the Sync Repo before this session and commits and pushes Skill
 Library changes when the session exits, even when no handoff is written. It
