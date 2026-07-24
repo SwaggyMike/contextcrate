@@ -53,4 +53,13 @@ cmd_init <<< $'office\n'"$origin"$'\n' >/dev/null 2>&1
 [ "$(git -C "$SYNC_DIR" remote get-url origin)" = "$origin" ]
 [ -n "$(find "$SATCHEL_DIR/recovery" -type f -name old-state -print -quit)" ]
 
-printf 'ok: init recovers incomplete Sync Repo destinations\n'
+# Re-running init with a different URL fails before changing either the local
+# config or the existing clone. Remote migration stays an explicit operation.
+other_origin="$tmp/other-origin.git"
+git init -q --bare "$other_origin"
+cp "$CONFIG_FILE" "$tmp/config-before-mismatch"
+! (cmd_init <<< $'office\n'"$other_origin"$'\n' >/dev/null 2>&1)
+cmp "$tmp/config-before-mismatch" "$CONFIG_FILE"
+[ "$(git -C "$SYNC_DIR" remote get-url origin)" = "$origin" ]
+
+printf 'ok: init recovery and Sync Repo origin validation\n'

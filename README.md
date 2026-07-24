@@ -21,7 +21,9 @@ also ensures the shared agent container image is built before reporting that
 an initialized installation is ready. If an interrupted older setup left
 ordinary files at `.satchel/sync/` without a Git repository, init preserves
 them under `.satchel/recovery/` and retries at a clean path; it never deletes
-or overwrites the uncertain files. Then, in any directory:
+or overwrites the uncertain files. Re-running init with a different Sync Repo
+URL stops before changing either the existing clone or machine config; moving
+between remotes remains an explicit manual operation. Then, in any directory:
 
 ```sh
 claude        # Claude Code in a throwaway container, scoped to this directory

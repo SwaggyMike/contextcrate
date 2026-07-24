@@ -89,7 +89,7 @@ cmd_init() {
   need_cmd git; need_cmd jq; engine >/dev/null
   mkdir -p "$SATCHEL_DIR" && chmod 700 "$SATCHEL_DIR"
 
-  local name url was_initialized=0
+  local name url existing_url was_initialized=0
   sync_ready && was_initialized=1
   read -r -p "$(prompt_text "machine name [$MACHINE]: ")" name
   name="$(slugify "${name:-$MACHINE}")"
@@ -97,6 +97,12 @@ cmd_init() {
     || die "machine name must start with a letter or number and contain only letters, numbers, dots, underscores, and hyphens"
   read -r -p "$(prompt_text "sync repo URL (private git repo; empty to skip sync for now)${SYNC_URL:+ [$SYNC_URL]}: ")" url
   url="${url:-$SYNC_URL}"
+  if [ -n "$url" ] && [ -d "$SYNC_DIR/.git" ]; then
+    existing_url="$(git -C "$SYNC_DIR" remote get-url origin 2>/dev/null)" \
+      || die "existing Sync Repo clone has no origin: $SYNC_DIR"
+    [ "$existing_url" = "$url" ] \
+      || die "Sync Repo URL does not match the existing clone ($existing_url); move the clone aside before switching remotes"
+  fi
 
   {
     printf '# Satchel config — plain bash, sourced by satchel.\n'
