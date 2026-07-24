@@ -24,7 +24,10 @@ Two of its premises expired:
   nested `.git`, and has no broken or escaping symlinks. Invalid attempts move
   to the machine-local Satchel quarantine; when updating a previously committed
   skill, the committed valid copy is restored. Validation deliberately does
-  not interpret prose or try to prove every file reference.
+  not interpret prose or try to prove every file reference. The sole metadata
+  exception is `skills-lock.json`: when present it must be a real file
+  containing valid JSON, syncs with the library for installer-driven updates,
+  and is not reported as a skill.
 - The Skill Library and current Machine Knowledge directory are the only
   Sync Repo paths mounted read-write. Satchel repairs ownership of those exact
   paths before and after sessions so root-run hosts and Host Sessions cannot

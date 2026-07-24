@@ -54,6 +54,8 @@ grep -Fqx '/skills/shared/.system/' "$SATCHEL_DIR/sync/.gitignore"
 mkdir -p "$SATCHEL_DIR/sync/skills/shared/stable"
 printf '%s\n' '---' 'name: stable' 'description: stable' '---' \
   > "$SATCHEL_DIR/sync/skills/shared/stable/SKILL.md"
+printf '{"skills":{"stable":{"source":"example/stable"}}}\n' \
+  > "$SATCHEL_DIR/sync/skills/shared/skills-lock.json"
 git -C "$SATCHEL_DIR/sync" add -A
 git -C "$SATCHEL_DIR/sync" commit -qm baseline
 
@@ -75,6 +77,7 @@ printf '%s\n' '---' 'name: hidden' 'description: hidden' '---' \
 ln -s "$tmp/outside" "$SATCHEL_DIR/sync/skills/shared/escape/outside"
 printf 'generated\n' > "$SATCHEL_DIR/sync/skills/shared/.system/generated/runtime"
 rm -f "$SATCHEL_DIR/sync/skills/shared/stable/SKILL.md"
+printf '{broken\n' > "$SATCHEL_DIR/sync/skills/shared/skills-lock.json"
 
 repair_skill_library 1 >/dev/null 2>&1
 [ -f "$SATCHEL_DIR/sync/skills/shared/good/SKILL.md" ]
@@ -83,10 +86,16 @@ repair_skill_library 1 >/dev/null 2>&1
 [ ! -e "$SATCHEL_DIR/sync/skills/shared/nested" ]
 [ ! -e "$SATCHEL_DIR/sync/skills/shared/escape" ]
 [ ! -e "$SATCHEL_DIR/sync/skills/shared/.hidden" ]
-[ "$(find "$SKILL_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 | wc -l)" = 5 ]
+[ "$(jq -r '.skills.stable.source' "$SATCHEL_DIR/sync/skills/shared/skills-lock.json")" = example/stable ]
+[ -n "$(find "$SKILL_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 -name '*--skills-lock.json' -print -quit)" ]
+[ "$(find "$SKILL_QUARANTINE_DIR" -mindepth 1 -maxdepth 1 | wc -l)" = 6 ]
 ! git -C "$SATCHEL_DIR/sync" status --short | grep -q 'skills/shared/.system'
-grep -q 'quarantined locally: 5' <(cmd_status 2>/dev/null)
-grep -q 'skills installed: good' <(report_skill_changes 2>&1)
+grep -q 'quarantined locally: 6' <(cmd_status 2>/dev/null)
+printf '{"skills":{"stable":{"source":"example/stable"},"good":{"source":"example/good"}}}\n' \
+  > "$SATCHEL_DIR/sync/skills/shared/skills-lock.json"
+skill_changes="$(report_skill_changes 2>&1)"
+grep -q 'skills installed: good' <<< "$skill_changes"
+! grep -q 'skills-lock.json' <<< "$skill_changes"
 printf '\nupdated\n' >> "$SATCHEL_DIR/sync/skills/shared/stable/SKILL.md"
 grep -q 'skills updated: stable' <(report_skill_changes 2>&1)
 rm -rf -- "$SATCHEL_DIR/sync/skills/shared/stable"

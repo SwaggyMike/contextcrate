@@ -1431,6 +1431,17 @@ skill_validation_error() { # skill_validation_error <path> → prints reason
     printf 'directory name must start with a letter or number and use only letters, numbers, dots, underscores, and hyphens'
     return 0
   fi
+  if [ "$name" = skills-lock.json ]; then
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+      printf 'skills-lock.json must be a real file'
+      return 0
+    fi
+    if ! jq -e . "$path" >/dev/null 2>&1; then
+      printf 'skills-lock.json must contain valid JSON'
+      return 0
+    fi
+    return 1
+  fi
   if [ ! -d "$path" ] || [ -L "$path" ]; then
     printf 'each top-level entry must be a real directory'
     return 0
@@ -1466,7 +1477,7 @@ quarantine_skill_path() { # quarantine_skill_path <path> <reason> → prints des
     out="$SKILL_QUARANTINE_DIR/$now--$name-$n"; n=$((n + 1))
   done
   mv -- "$path" "$out"
-  warn "skill '$name' was quarantined: $reason"
+  warn "Skill Library entry '$name' was quarantined: $reason"
   warn "preserved at $out (local only; not synced)"
   printf '%s' "$out"
 }
@@ -1495,7 +1506,11 @@ repair_skill_library() { # repair_skill_library <restore-previous:0|1>
     if [ "$restore_previous" -eq 1 ] && restore_committed_skill "$name"; then
       restored_reason="$(skill_validation_error "$path" || true)"
       if [ -z "$restored_reason" ]; then
-        info "restored the previous valid copy of skill '$name'"
+        if [ "$name" = skills-lock.json ]; then
+          info "restored the previous valid skills-lock.json"
+        else
+          info "restored the previous valid copy of skill '$name'"
+        fi
       else
         quarantine_skill_path "$path" "the previously committed copy is also invalid: $restored_reason" >/dev/null
       fi
@@ -1518,6 +1533,7 @@ report_skill_changes() {
   for path in "${changed[@]}"; do
     rel="${path#"$shared_rel"/}"; name="${rel%%/*}"
     [ -n "$name" ] && [[ "$name" != .* ]] || continue
+    [ "$name" != skills-lock.json ] || continue
     [[ "$seen" != *$'\n'"$name"$'\n'* ]] || continue
     seen+="$name"$'\n'
     if git_sync cat-file -e "HEAD:$shared_rel/$name" 2>/dev/null; then

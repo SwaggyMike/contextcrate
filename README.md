@@ -156,6 +156,10 @@ being synced; an existing valid version is restored. Valid installs, updates,
 and removals are listed, committed, and pushed even when there is no handoff;
 `satchel sync` retries a failed/offline push.
 
+Installers may also maintain `skills-lock.json` beside the skill folders so
+future updates work across machines. Satchel syncs it when it contains valid
+JSON, quarantines malformed copies, and never reports it as a skill.
+
 Codex's bundled `.system` skills are runtime files tied to the installed Codex
 version, so they stay local and are ignored by the Sync Repo. Only
 user-installed skills sync across the caravan. Start a new session before
