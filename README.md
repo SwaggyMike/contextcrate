@@ -87,7 +87,9 @@ agent's local conversation home mounted. An empty temporary filesystem at the
 original project path preserves cwd-based conversation selection without
 exposing project contents. It cannot read the project, `/host`, SSH agent,
 clipboard, MCP tools, shared skills, or machine state; Satchel itself files
-the returned note afterward.
+the returned note afterward. Repeated Ctrl-C used to exit the interactive
+agent is ignored through session cleanup, handoff generation, and sync; press
+Ctrl-\ while the handoff is being written to deliberately skip it.
 
 Each machine has a small, always-loaded `notes.md` for enduring operational
 facts and machine-wide risks, a dated `inventory.md` read only when system

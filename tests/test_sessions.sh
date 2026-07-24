@@ -175,6 +175,7 @@ printf '%s\n' \
   'done' \
   'mkdir -p "$home/.codex/sessions"' \
   'touch "$home/.codex/sessions/new.jsonl"' \
+  'touch "$SATCHEL_TEST_EVENTS.session-ended"' \
   > "$fake_engine"
 chmod +x "$fake_engine"
 export SATCHEL_TEST_EVENTS="$events"
@@ -193,7 +194,12 @@ materialize_mcp() { printf 'materialize\n' >> "$events"; }
 ssh_preflight() { SSH_STATE=none; }
 write_memory_file() { mkdir -p "$2/.codex"; printf 'memory\n' >> "$events"; }
 fix_home_ownership() { printf 'ownership:%s\n' "$1" >> "$events"; }
-fix_synced_write_ownership() { printf 'synced-ownership\n' >> "$events"; }
+fix_synced_write_ownership() {
+  printf 'synced-ownership\n' >> "$events"
+  if [ -f "$events.session-ended" ]; then
+    bash -c 'trap -p INT' > "$events.post-session-int"
+  fi
+}
 engine() { printf '%s' "$fake_engine"; }
 generate_handoff() { printf 'handoff\n' >> "$events"; }
 report_skill_changes() { :; }
@@ -245,5 +251,10 @@ push_line="$(grep -n '^push$' "$events" | head -n1 | cut -d: -f1)"
 [ "$first_ownership" -lt "$run_line" ]
 [ "$run_line" -lt "$handoff_line" ]
 [ "$handoff_line" -lt "$push_line" ]
+# Once the interactive engine exits, cleanup subprocesses must inherit an
+# ignored SIGINT. A caught no-op handler protects only the Satchel shell:
+# Bash resets it to default in children, so repeated Ctrl-C can otherwise
+# kill ownership repair and leave the handoff writer unable to read Codex.
+grep -Eq "trap -- '' (SIGINT|INT)" "$events.post-session-int"
 
 printf 'ok: session boundaries, validation, and lifecycle\n'

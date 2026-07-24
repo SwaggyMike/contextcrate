@@ -327,13 +327,17 @@ cmd_session() {
     launch=(codex -c 'sandbox_mode="danger-full-access"' -c check_for_update_on_startup=false)
   fi
 
-  # Keep Satchel itself alive through Ctrl-C: caught traps reset to the
+  # Keep Satchel itself alive through Ctrl-C: a caught trap resets to the
   # default in the external container engine, so the interactive agent still
-  # receives SIGINT normally. Once it exits, the same no-op trap absorbs any
-  # repeats from a held key through cleanup and handoff generation.
+  # receives SIGINT normally.
   local rc=0
   trap ':' INT
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
+  # After the interactive engine exits, ignore INT instead of merely catching
+  # it. Ignored signals stay ignored in child processes; caught handlers reset
+  # to default there, which let repeated Ctrl-C kill ownership repair and leave
+  # the handoff writer unable to resume a root-owned Codex transcript.
+  trap '' INT
 
   # Normalize now, before the handoff writer (sandboxed, running as the user)
   # needs to read the transcripts the root session just wrote. Synced
