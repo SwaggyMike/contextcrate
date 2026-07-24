@@ -156,6 +156,27 @@ fix_synced_write_ownership() {
   fix_home_ownership "$SYNC_DIR/machines/$MACHINE"
 }
 
+prepare_post_session_state() { # prepare_post_session_state <agent-home>
+  local home="$1"
+  if [ "$HOST_MODE" -eq 1 ]; then fix_home_ownership "$home"; fi
+  fix_synced_write_ownership
+}
+
+finalize_session_sync() { # finalize_session_sync <project-id-or-empty>
+  local slug="$1"
+  repair_skill_library 1
+  fix_synced_write_ownership
+  report_skill_changes
+  # Push regardless of the handoff: a session may have installed skills or
+  # edited synced files even without a handoff to write.
+  if [ -z "$SYNC_BLOCK_REASON" ]; then
+    warn_machine_notes_size
+    quiet_push "session: ${slug:-untracked} on $MACHINE"
+  else
+    warn "automatic sync skipped: $SYNC_BLOCK_REASON; review machine notes, then run 'satchel sync'"
+  fi
+}
+
 # The sandbox promise is "the container sees only the project directory" —
 # which is void if the project directory IS your home (SSH keys, tokens,
 # logins) or an ancestor of it. Host Sessions mount / on purpose, so no guard.
@@ -339,9 +360,8 @@ cmd_session() {
   trap ':' INT
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
   # After the interactive engine exits, ignore INT instead of merely catching
-  # it. Ignored signals stay ignored in child processes; caught handlers reset
-  # to default there, which let repeated Ctrl-C kill ownership repair and leave
-  # the handoff writer unable to resume a root-owned Codex transcript.
+  # it. Noninteractive durable cleanup also runs in separate process groups
+  # because Docker and Git install signal handlers of their own.
   trap '' INT
 
   # Normalize now, before the handoff writer (sandboxed, running as the user)
@@ -349,8 +369,8 @@ cmd_session() {
   # read-write mounts get the same repair on every engine/session mode:
   # root-run hosts need it before safe sessions, and Docker Host Sessions can
   # otherwise leave root-owned skills or machine knowledge behind.
-  if [ "$HOST_MODE" -eq 1 ]; then fix_home_ownership "$home"; fi
-  fix_synced_write_ownership
+  run_interrupt_isolated prepare_post_session_state "$home" \
+    || warn "post-session ownership preparation did not complete"
 
   if sync_ready; then
     if [ -z "${SATCHEL_NO_HANDOFF:-}" ] \
@@ -363,17 +383,8 @@ cmd_session() {
       generate_handoff "$agent" "$slug" "$project"
       slug="$(project_for_path "$project")"
     fi
-    repair_skill_library 1
-    fix_synced_write_ownership
-    report_skill_changes
-    # Push regardless of the handoff: a session may have installed skills or
-    # edited synced files even without a handoff to write.
-    if [ -z "$SYNC_BLOCK_REASON" ]; then
-      warn_machine_notes_size
-      quiet_push "session: ${slug:-untracked} on $MACHINE"
-    else
-      warn "automatic sync skipped: $SYNC_BLOCK_REASON; review machine notes, then run 'satchel sync'"
-    fi
+    run_interrupt_isolated finalize_session_sync "$slug" \
+      || warn "post-session validation or sync did not complete; run 'satchel sync' to retry"
   fi
   rm -f "$stamp"
   # Keep the temporary agent through the host-side Sync Repo push, then tear

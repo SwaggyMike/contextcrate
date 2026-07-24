@@ -198,6 +198,7 @@ fix_synced_write_ownership() {
   printf 'synced-ownership\n' >> "$events"
   if [ -f "$events.session-ended" ]; then
     bash -c 'trap -p INT' > "$events.post-session-int"
+    ps -o pgid= -p "$BASHPID" | tr -d ' ' > "$events.ownership-pgid"
     cleanup_engine=""
     cleanup_engine="$(engine)" || true
     printf 'cleanup-engine:%s\n' "$cleanup_engine" >> "$events"
@@ -216,7 +217,10 @@ engine() {
 generate_handoff() { printf 'handoff\n' >> "$events"; }
 report_skill_changes() { :; }
 warn_machine_notes_size() { :; }
-quiet_push() { printf 'push\n' >> "$events"; }
+quiet_push() {
+  printf 'push\n' >> "$events"
+  ps -o pgid= -p "$BASHPID" | tr -d ' ' > "$events.sync-pgid"
+}
 
 # Accepting the automatic baseline consumes this launch. Success returns to
 # the shell with the agreed next step; failure and Ctrl-C preserve their
@@ -254,6 +258,7 @@ maybe_offer_baseline() {
   BASELINE_LAUNCH_STATUS=0
 }
 ENGINE=""
+ps -o pgid= -p "$BASHPID" | tr -d ' ' > "$events.session-pgid"
 (cd "$tmp/work/app" && cmd_session codex)
 first_materialize="$(grep -n '^materialize$' "$events" | head -n1 | cut -d: -f1)"
 first_ownership="$(grep -n '^ownership:' "$events" | head -n1 | cut -d: -f1)"
@@ -270,5 +275,38 @@ push_line="$(grep -n '^push$' "$events" | head -n1 | cut -d: -f1)"
 # kill ownership repair and leave the handoff writer unable to read Codex.
 grep -Eq "trap -- '' (SIGINT|INT)" "$events.post-session-int"
 grep -Fq "cleanup-engine:$fake_engine" "$events"
+[ "$(cat "$events.ownership-pgid")" != "$(cat "$events.session-pgid")" ]
+[ "$(cat "$events.sync-pgid")" != "$(cat "$events.session-pgid")" ]
+
+# A cleanup program that installs its own INT handler still survives terminal
+# Ctrl-C because the runner places it outside Satchel's foreground process
+# group. This models both Docker ownership repair and Git Sync Repo writes.
+interrupt_task() {
+  trap 'printf "interrupted\n" > "$events.interrupt-result"; exit 99' INT
+  : > "$events.interrupt-started"
+  sleep 0.2
+  printf 'complete\n' > "$events.interrupt-result"
+}
+case "$-" in *m*) test_had_monitor=1 ;; *) test_had_monitor=0 ;; esac
+set -m
+(
+  set +m
+  trap '' INT
+  task_rc=0
+  run_interrupt_isolated interrupt_task || task_rc=$?
+  printf '%s\n' "$task_rc" > "$events.interrupt-rc"
+) &
+interrupt_runner=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -f "$events.interrupt-started" ] && break
+  sleep 0.05
+done
+kill -INT -- "-$interrupt_runner"
+kill -INT -- "-$interrupt_runner"
+kill -INT -- "-$interrupt_runner"
+wait "$interrupt_runner"
+[ "$test_had_monitor" -eq 1 ] || set +m
+[ "$(cat "$events.interrupt-rc")" = 0 ]
+grep -q '^complete$' "$events.interrupt-result"
 
 printf 'ok: session boundaries, validation, and lifecycle\n'

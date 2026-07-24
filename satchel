@@ -1815,7 +1815,10 @@ file_handoff() { # file_handoff <project-id-or-empty> <date> <body> — empty id
 handoff_body_complete() {
   local body="$1" heading
   for heading in '## Goal' '## Done' '## In flight' '## Next steps' '## Gotchas'; do
-    grep -Fqx "$heading" <<< "$body" || return 1
+    case $'\n'"$body"$'\n' in
+      *$'\n'"$heading"$'\n'*) ;;
+      *) return 1 ;;
+    esac
   done
 }
 
@@ -1866,7 +1869,10 @@ resolve_candidate_handoffs() { # resolve candidate scopes after substantive work
   RESOLVED_PROJECT_IDS=""
   for k in "${!candidate_tokens[@]}"; do
     token="${candidate_tokens[$k]}"; candidate_resolutions[$k]=unknown
-    if ! grep -Fqx "=== candidate: $token ===" <<< "$body"; then continue; fi
+    case $'\n'"$body"$'\n' in
+      *$'\n'"=== candidate: $token ==="$'\n'*) ;;
+      *) continue ;;
+    esac
     path="${candidate_paths[$k]}"; identity="${candidate_identities[$k]}"
     if [ -t 0 ]; then
       if confirm_yes "track Git repo $path ($identity) as a project?"; then
@@ -1936,6 +1942,27 @@ compose_handoff_run_args() { # compose_handoff_run_args <agent> <home> <project>
     RUN_ARGS+=(--userns=keep-id --passwd-entry '$USERNAME:*:$UID:$GID::/home/satchel:/bin/bash')
   fi
   return 0
+}
+
+run_interrupt_isolated() { # run_interrupt_isolated <command...>
+  local task_pid="" rc=0 had_monitor=0 old_int old_quit
+  old_int="$(trap -p INT)"
+  old_quit="$(trap -p QUIT)"
+  case "$-" in *m*) had_monitor=1 ;; esac
+
+  # Some programs install their own signal handlers even when Satchel ignores
+  # SIGINT. Run noninteractive cleanup in another process group so terminal
+  # Ctrl-C/QUIT signals keep reaching Satchel but cannot corrupt durable work.
+  trap '' INT QUIT
+  set -m
+  "$@" &
+  task_pid=$!
+  wait "$task_pid" || rc=$?
+  [ "$had_monitor" -eq 1 ] || set +m
+  trap - INT QUIT
+  [ -z "$old_int" ] || eval "$old_int"
+  [ -z "$old_quit" ] || eval "$old_quit"
+  return "$rc"
 }
 
 run_handoff_writer() { # run_handoff_writer <stdout-file> <stderr-file> <command...>
@@ -2047,7 +2074,7 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
   bodyf="$(mktemp)"
   run_handoff_writer "$bodyf" "$errf" \
     timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" || rc=$?
-  body="$(cat "$bodyf")"
+  body="$(<"$bodyf")"
   if [ "$rc" -eq 131 ]; then
     rm -f "$errf" "$bodyf"
     warn "handoff skipped — previous handoff kept"
@@ -2069,7 +2096,7 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
       rc=0
       run_handoff_writer "$bodyf" "$errf" \
         timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" || rc=$?
-      body="$(cat "$bodyf")"
+      body="$(<"$bodyf")"
       if [ "$rc" -eq 131 ]; then
         rm -f "$errf" "$bodyf"
         warn "handoff skipped — previous handoff kept"
@@ -2092,17 +2119,20 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
   fi
   rm -f "$errf" "$bodyf"
   if [ "$multi" -eq 1 ]; then
-    local ids="" saved
+    local ids="" saved savedf
     for vi in "${vis_ids[@]}"; do ids+="$vi "; done
     if [ ${#candidate_tokens[@]} -gt 0 ]; then
       resolve_candidate_handoffs "$body"
       body="$RESOLVED_HANDOFF_BODY"; ids+="$RESOLVED_PROJECT_IDS"
     fi
-    saved="$(file_multi_handoffs "$now" "$ids" "$body")"
+    savedf="$(mktemp)"
+    run_interrupt_isolated file_multi_handoffs "$now" "$ids" "$body" > "$savedf"
+    saved="$(<"$savedf")"
+    rm -f "$savedf"
     [ "$saved" -gt 0 ] \
       || warn "handoff attribution was incomplete — keeping the previous handoff"
   else
-    file_handoff "$slug" "$now" "$body"
+    run_interrupt_isolated file_handoff "$slug" "$now" "$body"
   fi
   return 0
 }
@@ -2650,6 +2680,27 @@ fix_synced_write_ownership() {
   fix_home_ownership "$SYNC_DIR/machines/$MACHINE"
 }
 
+prepare_post_session_state() { # prepare_post_session_state <agent-home>
+  local home="$1"
+  if [ "$HOST_MODE" -eq 1 ]; then fix_home_ownership "$home"; fi
+  fix_synced_write_ownership
+}
+
+finalize_session_sync() { # finalize_session_sync <project-id-or-empty>
+  local slug="$1"
+  repair_skill_library 1
+  fix_synced_write_ownership
+  report_skill_changes
+  # Push regardless of the handoff: a session may have installed skills or
+  # edited synced files even without a handoff to write.
+  if [ -z "$SYNC_BLOCK_REASON" ]; then
+    warn_machine_notes_size
+    quiet_push "session: ${slug:-untracked} on $MACHINE"
+  else
+    warn "automatic sync skipped: $SYNC_BLOCK_REASON; review machine notes, then run 'satchel sync'"
+  fi
+}
+
 # The sandbox promise is "the container sees only the project directory" —
 # which is void if the project directory IS your home (SSH keys, tokens,
 # logins) or an ancestor of it. Host Sessions mount / on purpose, so no guard.
@@ -2833,9 +2884,8 @@ cmd_session() {
   trap ':' INT
   "$(engine)" run --rm "${tty[@]}" "${RUN_ARGS[@]}" "$IMAGE" "${launch[@]}" "$@" || rc=$?
   # After the interactive engine exits, ignore INT instead of merely catching
-  # it. Ignored signals stay ignored in child processes; caught handlers reset
-  # to default there, which let repeated Ctrl-C kill ownership repair and leave
-  # the handoff writer unable to resume a root-owned Codex transcript.
+  # it. Noninteractive durable cleanup also runs in separate process groups
+  # because Docker and Git install signal handlers of their own.
   trap '' INT
 
   # Normalize now, before the handoff writer (sandboxed, running as the user)
@@ -2843,8 +2893,8 @@ cmd_session() {
   # read-write mounts get the same repair on every engine/session mode:
   # root-run hosts need it before safe sessions, and Docker Host Sessions can
   # otherwise leave root-owned skills or machine knowledge behind.
-  if [ "$HOST_MODE" -eq 1 ]; then fix_home_ownership "$home"; fi
-  fix_synced_write_ownership
+  run_interrupt_isolated prepare_post_session_state "$home" \
+    || warn "post-session ownership preparation did not complete"
 
   if sync_ready; then
     if [ -z "${SATCHEL_NO_HANDOFF:-}" ] \
@@ -2857,17 +2907,8 @@ cmd_session() {
       generate_handoff "$agent" "$slug" "$project"
       slug="$(project_for_path "$project")"
     fi
-    repair_skill_library 1
-    fix_synced_write_ownership
-    report_skill_changes
-    # Push regardless of the handoff: a session may have installed skills or
-    # edited synced files even without a handoff to write.
-    if [ -z "$SYNC_BLOCK_REASON" ]; then
-      warn_machine_notes_size
-      quiet_push "session: ${slug:-untracked} on $MACHINE"
-    else
-      warn "automatic sync skipped: $SYNC_BLOCK_REASON; review machine notes, then run 'satchel sync'"
-    fi
+    run_interrupt_isolated finalize_session_sync "$slug" \
+      || warn "post-session validation or sync did not complete; run 'satchel sync' to retry"
   fi
   rm -f "$stamp"
   # Keep the temporary agent through the host-side Sync Repo push, then tear

@@ -47,7 +47,10 @@ file_handoff() { # file_handoff <project-id-or-empty> <date> <body> — empty id
 handoff_body_complete() {
   local body="$1" heading
   for heading in '## Goal' '## Done' '## In flight' '## Next steps' '## Gotchas'; do
-    grep -Fqx "$heading" <<< "$body" || return 1
+    case $'\n'"$body"$'\n' in
+      *$'\n'"$heading"$'\n'*) ;;
+      *) return 1 ;;
+    esac
   done
 }
 
@@ -98,7 +101,10 @@ resolve_candidate_handoffs() { # resolve candidate scopes after substantive work
   RESOLVED_PROJECT_IDS=""
   for k in "${!candidate_tokens[@]}"; do
     token="${candidate_tokens[$k]}"; candidate_resolutions[$k]=unknown
-    if ! grep -Fqx "=== candidate: $token ===" <<< "$body"; then continue; fi
+    case $'\n'"$body"$'\n' in
+      *$'\n'"=== candidate: $token ==="$'\n'*) ;;
+      *) continue ;;
+    esac
     path="${candidate_paths[$k]}"; identity="${candidate_identities[$k]}"
     if [ -t 0 ]; then
       if confirm_yes "track Git repo $path ($identity) as a project?"; then
@@ -168,6 +174,27 @@ compose_handoff_run_args() { # compose_handoff_run_args <agent> <home> <project>
     RUN_ARGS+=(--userns=keep-id --passwd-entry '$USERNAME:*:$UID:$GID::/home/satchel:/bin/bash')
   fi
   return 0
+}
+
+run_interrupt_isolated() { # run_interrupt_isolated <command...>
+  local task_pid="" rc=0 had_monitor=0 old_int old_quit
+  old_int="$(trap -p INT)"
+  old_quit="$(trap -p QUIT)"
+  case "$-" in *m*) had_monitor=1 ;; esac
+
+  # Some programs install their own signal handlers even when Satchel ignores
+  # SIGINT. Run noninteractive cleanup in another process group so terminal
+  # Ctrl-C/QUIT signals keep reaching Satchel but cannot corrupt durable work.
+  trap '' INT QUIT
+  set -m
+  "$@" &
+  task_pid=$!
+  wait "$task_pid" || rc=$?
+  [ "$had_monitor" -eq 1 ] || set +m
+  trap - INT QUIT
+  [ -z "$old_int" ] || eval "$old_int"
+  [ -z "$old_quit" ] || eval "$old_quit"
+  return "$rc"
 }
 
 run_handoff_writer() { # run_handoff_writer <stdout-file> <stderr-file> <command...>
@@ -279,7 +306,7 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
   bodyf="$(mktemp)"
   run_handoff_writer "$bodyf" "$errf" \
     timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${cmd[@]}" || rc=$?
-  body="$(cat "$bodyf")"
+  body="$(<"$bodyf")"
   if [ "$rc" -eq 131 ]; then
     rm -f "$errf" "$bodyf"
     warn "handoff skipped — previous handoff kept"
@@ -301,7 +328,7 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
       rc=0
       run_handoff_writer "$bodyf" "$errf" \
         timeout 240 "$(engine)" run --rm "${RUN_ARGS[@]}" "$IMAGE" "${base_cmd[@]}" || rc=$?
-      body="$(cat "$bodyf")"
+      body="$(<"$bodyf")"
       if [ "$rc" -eq 131 ]; then
         rm -f "$errf" "$bodyf"
         warn "handoff skipped — previous handoff kept"
@@ -324,17 +351,20 @@ Start tracked notes with exactly '=== project: <id> ===', candidate notes with e
   fi
   rm -f "$errf" "$bodyf"
   if [ "$multi" -eq 1 ]; then
-    local ids="" saved
+    local ids="" saved savedf
     for vi in "${vis_ids[@]}"; do ids+="$vi "; done
     if [ ${#candidate_tokens[@]} -gt 0 ]; then
       resolve_candidate_handoffs "$body"
       body="$RESOLVED_HANDOFF_BODY"; ids+="$RESOLVED_PROJECT_IDS"
     fi
-    saved="$(file_multi_handoffs "$now" "$ids" "$body")"
+    savedf="$(mktemp)"
+    run_interrupt_isolated file_multi_handoffs "$now" "$ids" "$body" > "$savedf"
+    saved="$(<"$savedf")"
+    rm -f "$savedf"
     [ "$saved" -gt 0 ] \
       || warn "handoff attribution was incomplete — keeping the previous handoff"
   else
-    file_handoff "$slug" "$now" "$body"
+    run_interrupt_isolated file_handoff "$slug" "$now" "$body"
   fi
   return 0
 }
