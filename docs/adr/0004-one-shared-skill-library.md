@@ -35,6 +35,14 @@ Two of its premises expired:
   treatment. The allowlist is exact, successful preparation is silent, and
   project or arbitrary host paths are never ownership-rewritten.
 - Agent-native skill discovery occurs at startup. Installation is durable immediately, but a fresh session is the boundary at which the newly installed skill can be assumed to appear automatically.
+- Host-side management stays deliberately narrow: `satchel skills` lists
+  active user-installed skills, and `satchel skills remove [name]` removes an
+  exact or interactively selected skill, then immediately syncs that deletion.
+  Installation and updates remain agent/installer-driven because Satchel does
+  not own source formats, trust policy, or update protocols.
+- `skills-lock.json` remains installer-owned during removal. Satchel may warn
+  that it still appears to reference the removed name, but never guesses at its
+  schema or rewrites it.
 - A skill that misbehaves on one agent is handled inside the skill (frontmatter like `disable-model-invocation`), not by library placement. Codex ignores skill metadata it can't use per-skill; it does not fail the library.
 
 ## Consequences
@@ -43,6 +51,9 @@ Two of its premises expired:
 - Valid installs, updates, and removals sync without another confirmation and
   are reported at session exit. Quarantined attempts never sync, are never
   deleted automatically, and remain visible through `satchel status`.
+- A named or numbered `satchel skills remove` selection is the authorization;
+  there is no second prompt. The active folder is deleted rather than locally
+  quarantined, and normal Sync Repo history is the recovery path.
 - An agent may surface a skill that was only ever tested on the other one. Accepted: same format, same user, and the failure mode is a visible misfire rather than the silent absence the split caused.
 - If per-agent curation is ever genuinely needed, it returns as an explicit exclusion mechanism, not as the default layout.
 - Migration is a one-time `git mv` in the sync repo (any one machine), then `satchel update` everywhere; nothing else moves.

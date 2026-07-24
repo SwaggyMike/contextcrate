@@ -19,6 +19,7 @@ main() {
     init)              cmd_init "$@" ;;
     sync)              cmd_sync "$@" ;;
     status)            cmd_status "$@" ;;
+    skills)            cmd_skills "$@" ;;
     key)               cmd_key "$@" ;;
     retire)            cmd_retire "$@" ;;
     track)             cmd_track "$@" ;;

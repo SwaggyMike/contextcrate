@@ -153,6 +153,90 @@ report_skill_changes() {
   [ ${#removed[@]} -eq 0 ] || info "skills removed: $(IFS=', '; printf '%s' "${removed[*]}")"
 }
 
+skill_names() {
+  local shared="$SYNC_DIR/skills/shared" path name
+  for path in "$shared"/*; do
+    [ -d "$path" ] && [ ! -L "$path" ] && [ -f "$path/SKILL.md" ] || continue
+    name="$(basename "$path")"
+    skill_name_valid "$name" || continue
+    printf '%s\n' "$name"
+  done | sort
+}
+
+skill_quarantine_count() {
+  local path count=0
+  [ -d "$SKILL_QUARANTINE_DIR" ] || { printf '0'; return 0; }
+  for path in "$SKILL_QUARANTINE_DIR"/*; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    count=$((count + 1))
+  done
+  printf '%s' "$count"
+}
+
+skill_lock_mentions() { # skill_lock_mentions <skill-name>
+  local lock="$SYNC_DIR/skills/shared/skills-lock.json"
+  [ -f "$lock" ] || return 1
+  jq -e --arg name "$1" \
+    'any(.. | objects; has($name)) or any(.. | strings; . == $name)' \
+    "$lock" >/dev/null
+}
+
+cmd_skills() {
+  sync_ready || die "sync is not set up — run 'satchel init' first"
+  quiet_pull || return $?
+  validate_sync_state
+  ensure_skill_library
+  repair_skill_library 1
+
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list)
+      [ $# -eq 0 ] || die "usage: satchel skills [list|remove [name]]"
+      local names=() name quarantined
+      while IFS= read -r name; do names+=("$name"); done < <(skill_names)
+      if [ ${#names[@]} -eq 0 ]; then
+        info "no user-installed skills"
+      else
+        for name in "${names[@]}"; do printf '  %s\n' "$name"; done
+      fi
+      quarantined="$(skill_quarantine_count)"
+      [ "$quarantined" -eq 0 ] \
+        || warn "$quarantined quarantined skill attempt(s) remain local; run 'satchel status' for the path"
+      ;;
+    remove)
+      [ $# -le 1 ] || die "usage: satchel skills remove [name]"
+      local name="${1:-}" names=() i choice target
+      if [ -z "$name" ]; then
+        while IFS= read -r name; do names+=("$name"); done < <(skill_names)
+        [ ${#names[@]} -gt 0 ] || die "no user-installed skills"
+        info "installed skills:"
+        for i in "${!names[@]}"; do
+          printf '  %s%d)%s %s\n' \
+            "$ERR_BOLD$ERR_BLUE" "$((i + 1))" "$ERR_RESET" "${names[$i]}" >&2
+        done
+        read -r -p "$(prompt_text "remove which skill? [1-${#names[@]}, empty to cancel]: ")" choice
+        [ -n "$choice" ] || { info "cancelled"; return 0; }
+        [[ "$choice" =~ ^[0-9]+$ ]] \
+          && [ "$choice" -ge 1 ] && [ "$choice" -le "${#names[@]}" ] \
+          || die "not a valid choice: $choice"
+        name="${names[$((choice - 1))]}"
+      fi
+      skill_name_valid "$name" \
+        || die "skill name must start with a letter or number and use only letters, numbers, dots, underscores, and hyphens"
+      target="$SYNC_DIR/skills/shared/$name"
+      [ -d "$target" ] && [ ! -L "$target" ] && [ -f "$target/SKILL.md" ] \
+        || die "unknown user-installed skill '$name' (run 'satchel skills list')"
+      rm -rf -- "$target"
+      if skill_lock_mentions "$name"; then
+        warn "skills-lock.json still appears to reference '$name'; Satchel left installer-owned metadata unchanged"
+      fi
+      quiet_push "skills: remove $name"
+      info "removed skill '$name' across the caravan"
+      ;;
+    *) die "usage: satchel skills [list|remove [name]]" ;;
+  esac
+}
+
 # The handoff and Satchel runtime contract reach the agent through its global
 # memory file inside the satchel-owned home (~/.claude/CLAUDE.md,
 # ~/.codex/AGENTS.md). Rewritten at every session start, so it always reflects

@@ -72,20 +72,12 @@ cmd_status() {
     local names; names="$(mcp_names | paste -sd, - | sed 's/,/, /g')"
     printf '\n%sMCP servers:%s %s\n' "$OUT_BOLD$OUT_BLUE" "$OUT_RESET" "${names:-(none)}"
     out_section 'Skills:'
-    local s list=""
-    for s in "$SYNC_DIR/skills/shared"/*/; do
-      [ -d "$s" ] && list="$list$(basename "$s"), "
-    done
-    printf '  %s\n' "${list:-(none), }" | sed 's/, $//'
-    if [ -d "$SKILL_QUARANTINE_DIR" ]; then
-      local quarantined=0
-      for s in "$SKILL_QUARANTINE_DIR"/*; do
-        [ -e "$s" ] || [ -L "$s" ] || continue
-        quarantined=$((quarantined + 1))
-      done
-      [ "$quarantined" -eq 0 ] \
-        || printf '  quarantined locally: %s (%s)\n' "$quarantined" "$SKILL_QUARANTINE_DIR"
-    fi
+    local list quarantined
+    list="$(skill_names | paste -sd, - | sed 's/,/, /g')"
+    printf '  %s\n' "${list:-(none)}"
+    quarantined="$(skill_quarantine_count)"
+    [ "$quarantined" -eq 0 ] \
+      || printf '  quarantined locally: %s (%s)\n' "$quarantined" "$SKILL_QUARANTINE_DIR"
   fi
 
   # Plugins are per-host by design (ADR 0003) — say what lives only here.

@@ -115,6 +115,64 @@ fix_synced_write_ownership
 [ "${owned[0]}" = "$SATCHEL_DIR/sync/skills/shared" ]
 [ "${owned[1]}" = "$SATCHEL_DIR/sync/machines/testbox" ]
 
+# The host CLI lists active skills and supports both exact and numbered
+# caravan-wide removal. Pull happens first; lock metadata is never rewritten.
+for name in alpha zeta; do
+  mkdir -p "$SATCHEL_DIR/sync/skills/shared/$name"
+  printf '%s\n' '---' "name: $name" "description: $name" '---' \
+    > "$SATCHEL_DIR/sync/skills/shared/$name/SKILL.md"
+done
+printf '{"skills":{"alpha":{"source":"example/alpha"},"good":{"source":"example/good"}}}\n' \
+  > "$SATCHEL_DIR/sync/skills/shared/skills-lock.json"
+git_sync add -A
+git_sync commit -qm "skills command baseline"
+
+pull_log="$tmp/skills-pulls"
+push_log="$tmp/skills-pushes"
+quiet_pull() { printf 'pull\n' >> "$pull_log"; }
+quiet_push() {
+  git_sync add -A
+  git_sync diff --cached --quiet || git_sync commit -qm "$1"
+  printf '%s\n' "$1" >> "$push_log"
+}
+
+cmd_skills > "$tmp/skills-list" 2> "$tmp/skills-list-err"
+[ "$(cat "$tmp/skills-list")" = $'  alpha\n  good\n  zeta' ]
+grep -q "7 quarantined skill attempt(s).*satchel status" "$tmp/skills-list-err"
+cmd_skills list > "$tmp/skills-list-explicit" 2> /dev/null
+cmp "$tmp/skills-list" "$tmp/skills-list-explicit"
+
+lock_hash="$(git hash-object "$SATCHEL_DIR/sync/skills/shared/skills-lock.json")"
+cmd_skills remove alpha > "$tmp/remove-alpha-out" 2> "$tmp/remove-alpha-err"
+[ ! -e "$SATCHEL_DIR/sync/skills/shared/alpha" ]
+[ "$(git_sync log -1 --format=%s)" = "skills: remove alpha" ]
+grep -q "skills-lock.json still appears to reference 'alpha'" "$tmp/remove-alpha-err"
+[ "$(git hash-object "$SATCHEL_DIR/sync/skills/shared/skills-lock.json")" = "$lock_hash" ]
+
+cmd_skills remove <<< 2 > "$tmp/remove-picker-out" 2> "$tmp/remove-picker-err"
+[ ! -e "$SATCHEL_DIR/sync/skills/shared/zeta" ]
+grep -q '1).*good' "$tmp/remove-picker-err"
+grep -q '2).*zeta' "$tmp/remove-picker-err"
+[ "$(git_sync log -1 --format=%s)" = "skills: remove zeta" ]
+grep -q '^skills: remove alpha$' "$push_log"
+grep -q '^skills: remove zeta$' "$push_log"
+
+if (cmd_skills remove missing >/dev/null 2>&1); then
+  printf 'missing skill removal unexpectedly succeeded\n' >&2
+  exit 1
+fi
+if (cmd_skills remove ../good >/dev/null 2>&1); then
+  printf 'unsafe skill name unexpectedly succeeded\n' >&2
+  exit 1
+fi
+quiet_pull() { return 1; }
+if (cmd_skills remove good >/dev/null 2>&1); then
+  printf 'skill removal continued after pull recovery failure\n' >&2
+  exit 1
+fi
+[ -d "$SATCHEL_DIR/sync/skills/shared/good" ]
+[ "$(wc -l < "$pull_log")" -ge 6 ]
+
 # Without a Sync Repo Satchel still identifies itself, but must not claim a
 # shared/persistent Skill Library exists.
 SYNC_URL=""

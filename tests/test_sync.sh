@@ -42,6 +42,20 @@ touch "$SYNC_DIR/four"; quiet_push "add machine testbox"
 touch "$SYNC_DIR/five"; quiet_push "add machine testbox"
 [ "$(count)" = 6 ]
 
+# Skill removal uses the same ordinary commit-and-push path immediately,
+# instead of waiting for a later session boundary.
+ensure_skill_library
+mkdir -p "$SYNC_DIR/skills/shared/removable"
+printf '%s\n' '---' 'name: removable' 'description: removable' '---' \
+  > "$SYNC_DIR/skills/shared/removable/SKILL.md"
+quiet_push "skills command baseline"
+cmd_skills remove removable >/dev/null 2>&1
+[ ! -e "$SYNC_DIR/skills/shared/removable" ]
+[ "$(git_sync log -1 --format=%s)" = "skills: remove removable" ]
+[ "$(origin_head)" = "$(git_sync rev-parse HEAD)" ]
+! git -C "$tmp/origin.git" ls-tree -r --name-only main \
+  | grep -q '^skills/shared/removable/'
+
 other="$tmp/other"
 git clone -q "$tmp/origin.git" "$other"
 

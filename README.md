@@ -158,9 +158,17 @@ being synced; an existing valid version is restored. Valid installs, updates,
 and removals are listed, committed, and pushed even when there is no handoff;
 `satchel sync` retries a failed/offline push.
 
+`satchel skills` lists active user-installed skills. `satchel skills remove`
+opens a numbered picker, while `satchel skills remove <name>` removes an exact
+skill directly. Removal pulls first and immediately commits and pushes the
+deletion caravan-wide. The named command is the authorization—there is no
+second confirmation—and Git history remains the recovery path.
+
 Installers may also maintain `skills-lock.json` beside the skill folders so
 future updates work across machines. Satchel syncs it when it contains valid
-JSON, quarantines malformed copies, and never reports it as a skill.
+JSON, quarantines malformed copies, and never reports it as a skill. Satchel
+does not interpret or rewrite installer-owned lock metadata during removal; it
+warns when the file still appears to reference the removed skill.
 
 Codex's bundled `.system` skills are runtime files tied to the installed Codex
 version, so they stay local and are ignored by the Sync Repo. Only
@@ -179,6 +187,8 @@ status` reports any locally quarantined attempts that still need attention.
 | `satchel init` | name this machine, connect the Sync Repo |
 | `satchel sync` | commit, pull, push the Sync Repo |
 | `satchel status [--ignored]` | caravan roster, Project IDs/origins, ignored count or list, handoffs, MCP servers, skills |
+| `satchel skills [list]` | list active user-installed skills |
+| `satchel skills remove [name]` | remove a skill caravan-wide — numbered picker without a name |
 | `satchel key` | show this machine's SSH public key (generates one if needed) |
 | `satchel retire [machine]` | remove a machine from the caravan — interactive picker without a name |
 | `satchel import claude\|codex` | copy the host's agent login into satchel's sessions |

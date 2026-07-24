@@ -24,6 +24,8 @@ caravan
   satchel init                 name this machine, connect the Sync Repo
   satchel sync                 commit, pull, push the Sync Repo
   satchel status [--ignored]   caravan roster, projects, handoffs, MCP, skills
+  satchel skills [list]        list active user-installed skills
+  satchel skills remove [name] remove a skill caravan-wide (bare: numbered picker)
   satchel key                  show this machine's SSH public key (makes one if needed)
   satchel retire [machine]     remove a machine from the caravan (picks from a list)
   satchel doctor               check this machine's whole setup and say what's wrong
@@ -48,6 +50,7 @@ setup
 Skills: ask an agent to install one mid-session. Satchel tells it the exact
 read-write Skill Library path (also in SATCHEL_SKILLS_DIR), and session-end
 sync carries the complete skill folder to every machine and both agents.
+Use 'satchel skills remove' for an interactive uninstall picker.
 EOF
 }
 
