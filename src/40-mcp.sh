@@ -8,6 +8,12 @@ mcp_name_valid() {
   [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]
 }
 
+mcp_url_valid() {
+  jq -en --arg url "$1" \
+    '$url | length > 0 and (explode | all(. >= 32 and . != 34 and . != 92 and . != 127))' \
+    >/dev/null
+}
+
 validate_mcp_state() {
   [ -f "$MCP_FILE" ] || return 0
   jq -e '
@@ -18,7 +24,9 @@ validate_mcp_state() {
       (.key | test("^[A-Za-z0-9_-]+$"))
       and (.value | type == "object")
       and ((.value | keys) == ["auth", "url"])
-      and (.value.url | type == "string" and length > 0)
+      and (.value.url | type == "string"
+        and length > 0
+        and (explode | all(. >= 32 and . != 34 and . != 92 and . != 127)))
       and (.value.auth == "bearer" or .value.auth == "none"))
   ' "$MCP_FILE" >/dev/null \
     || die "invalid mcp.json — expected safely named servers with url and bearer/none auth fields"
@@ -125,6 +133,8 @@ cmd_mcp() {
       fi
       [ "${3:-}" = "--no-auth" ] && auth="none"
       mcp_name_valid "$name" || die "server name must be [a-zA-Z0-9_-]"
+      mcp_url_valid "$url" \
+        || die "server URL cannot contain quotes, backslashes, or control characters"
       [ -f "$MCP_FILE" ] || printf '{ "servers": {} }\n' > "$MCP_FILE"
       jq --arg n "$name" --arg u "$url" --arg a "$auth" \
         '.servers[$n] = {url: $u, auth: $a}' "$MCP_FILE" > "$MCP_FILE.tmp"
@@ -231,13 +241,24 @@ materialize_mcp() {
       local cfg="$home/.codex/config.toml"
       mkdir -p "$home/.codex"
       touch "$cfg"
-      awk '/^# >>> satchel mcp >>>$/{skip=1} !skip{print} /^# <<< satchel mcp <<<$/{skip=0}' \
-        "$cfg" > "$cfg.tmp"
-      {
-        cat "$cfg.tmp"
-        printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s# <<< satchel mcp <<<\n' "$block"
-      } > "$cfg"
-      rm -f "$cfg.tmp"
+      if ! awk '
+        $0 == "# >>> satchel mcp >>>" {
+          if (opened || inside) exit 2
+          opened=1; inside=1; next
+        }
+        $0 == "# <<< satchel mcp <<<" {
+          if (!inside || closed) exit 2
+          closed=1; inside=0; next
+        }
+        !inside { print }
+        END { if (inside || opened != closed) exit 2 }
+      ' "$cfg" > "$cfg.tmp"; then
+        rm -f "$cfg.tmp"
+        die "Codex config has malformed Satchel MCP markers; leaving it unchanged: $cfg"
+      fi
+      printf '# >>> satchel mcp >>>\n# managed by satchel — rebuilt every session start\n%s# <<< satchel mcp <<<\n' "$block" \
+        >> "$cfg.tmp"
+      mv -f "$cfg.tmp" "$cfg"
       ;;
   esac
 }

@@ -108,6 +108,7 @@ Subsystem mapping:
 - baseline and machine knowledge: `tests/test_baseline.sh`
 - clipboard forwarding: `tests/test_clipboard.sh`
 - installation, shims, and uninstall: `tests/test_installer.sh`
+- MCP registry and materialization: `tests/test_mcp.sh`
 - terminal output: `tests/test_output.sh`
 - project identity and handoffs: `tests/test_projects.sh`
 - shared skills: `tests/test_skills.sh`
