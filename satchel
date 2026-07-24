@@ -1072,12 +1072,20 @@ ensure_image() {
 }
 
 cmd_image() {
-  [ $# -eq 0 ] || die "usage: satchel image"
-  if image_exists; then
-    info "container image already built; nothing to do"
-  else
-    ensure_image
-  fi
+  case "${1:-}" in
+    "")
+      if image_exists; then
+        info "container image already built; nothing to do"
+      else
+        ensure_image
+      fi
+      ;;
+    --rebuild)
+      [ $# -eq 1 ] || die "usage: satchel image [--rebuild]"
+      build_image
+      ;;
+    *) die "usage: satchel image [--rebuild]" ;;
+  esac
 }
 
 build_image() {
@@ -3459,18 +3467,18 @@ cmd_update() {
     mv "$tmp" "$self" 2>/dev/null || { need_cmd sudo; sudo mv "$tmp" "$self"; }
     info "satchel updated to commit ${sha:0:7} ($self)"
   fi
-  # Record what is installed now, even on the no-change path — that also
-  # backfills the record for installs that predate commit tracking.
+  # The new artifact must own the rebuild: this process still has the previous
+  # build_image function in memory after replacing itself.
+  info "rebuilding the container image to pick up new agent versions…"
+  "$self" image --rebuild || return $?
+  # Record the update only after its image build succeeds. The no-change path
+  # also backfills records for installs that predate commit tracking.
   if [ -n "$sha" ]; then
     mkdir -p "$SATCHEL_DIR"
     printf '%s\n' "$sha" > "$SCRIPT_SHA_FILE"
   fi
   mkdir -p "$SATCHEL_DIR"
   printf '%s\n' "$self" > "$INSTALL_PATH_FILE"
-  # The rebuild IS the agent update: --pull + fresh npm install bakes in the
-  # latest claude/codex, which sessions can't do for themselves.
-  info "rebuilding the container image to pick up new agent versions…"
-  build_image
   local av; av="$(image_agent_versions)"
   [ -n "$av" ] && info "agents in image: $av"
   return 0

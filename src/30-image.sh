@@ -13,12 +13,20 @@ ensure_image() {
 }
 
 cmd_image() {
-  [ $# -eq 0 ] || die "usage: satchel image"
-  if image_exists; then
-    info "container image already built; nothing to do"
-  else
-    ensure_image
-  fi
+  case "${1:-}" in
+    "")
+      if image_exists; then
+        info "container image already built; nothing to do"
+      else
+        ensure_image
+      fi
+      ;;
+    --rebuild)
+      [ $# -eq 1 ] || die "usage: satchel image [--rebuild]"
+      build_image
+      ;;
+    *) die "usage: satchel image [--rebuild]" ;;
+  esac
 }
 
 build_image() {

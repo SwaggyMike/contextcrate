@@ -51,4 +51,55 @@ rc=0
 update_check >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 130 ]
 
-printf 'ok: update availability check\n'
+# `image --rebuild` is the narrow entry point used by the newly installed
+# artifact during self-update.
+export REBUILD_HIT="$tmp/rebuild-hit"
+build_image() { : > "$REBUILD_HIT"; }
+cmd_image --rebuild
+[ -f "$REBUILD_HIT" ]
+rm "$REBUILD_HIT"
+
+# Replacing a running Bash script does not replace its loaded functions. The
+# updater must invoke the downloaded artifact for the rebuild, and stamp the
+# update only after that child succeeds.
+fake_self="$tmp/installed-satchel"
+download="$tmp/downloaded-satchel"
+old_recipe_hit="$tmp/old-recipe-hit"
+export NEW_RECIPE_HIT="$tmp/new-recipe-hit"
+printf '#!/usr/bin/env bash\nprintf old\n' > "$fake_self"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '[ "$1" = image ] && [ "$2" = --rebuild ]' \
+  ': > "$NEW_RECIPE_HIT"' \
+  > "$download"
+chmod 755 "$fake_self" "$download"
+readlink() { printf '%s\n' "$fake_self"; }
+UPDATE_SHA=1111111111111111111111111111111111111111
+curl() {
+  local arg out=""
+  case " $* " in
+    *"/commits/main"*) printf '{"sha":"%s"}\n' "$UPDATE_SHA"; return 0 ;;
+  esac
+  while [ $# -gt 0 ]; do
+    arg="$1"; shift
+    if [ "$arg" = -o ]; then out="$1"; shift; fi
+  done
+  cp "$download" "$out"
+}
+need_cmd() { :; }
+print_update_log() { :; }
+build_image() { : > "$old_recipe_hit"; }
+image_agent_versions() { :; }
+cmd_update >/dev/null 2>&1
+[ -f "$NEW_RECIPE_HIT" ]
+[ ! -e "$old_recipe_hit" ]
+[ "$(cat "$SCRIPT_SHA_FILE")" = 1111111111111111111111111111111111111111 ]
+
+UPDATE_SHA=2222222222222222222222222222222222222222
+printf '#!/usr/bin/env bash\nexit 7\n' > "$download"
+chmod 755 "$download"
+! (cmd_update >/dev/null 2>&1)
+[ "$(cat "$SCRIPT_SHA_FILE")" = 1111111111111111111111111111111111111111 ]
+unset -f readlink curl need_cmd print_update_log build_image image_agent_versions
+
+printf 'ok: update checks and new-artifact rebuild\n'
