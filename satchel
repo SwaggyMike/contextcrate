@@ -2739,6 +2739,11 @@ cmd_session() {
   project="$(readlink -f "$PWD" 2>/dev/null)" || die "could not resolve session directory $PWD"
   session_mount_guard "$agent" "$project"
   with_dirs_guard
+  # Resolve the engine in this shell before any $(engine) call can put its
+  # ENGINE assignment in a disposable command-substitution subshell. Cleanup
+  # must keep using the selected binary even if a force-exited Docker CLI makes
+  # a fresh `docker info` probe fail briefly after the interactive session.
+  engine >/dev/null
   ensure_image
   require_supported_engine_mounts
   home="$HOMES_DIR/$agent"

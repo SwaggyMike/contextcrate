@@ -198,9 +198,21 @@ fix_synced_write_ownership() {
   printf 'synced-ownership\n' >> "$events"
   if [ -f "$events.session-ended" ]; then
     bash -c 'trap -p INT' > "$events.post-session-int"
+    cleanup_engine=""
+    cleanup_engine="$(engine)" || true
+    printf 'cleanup-engine:%s\n' "$cleanup_engine" >> "$events"
   fi
 }
-engine() { printf '%s' "$fake_engine"; }
+# Model a Docker probe that works before the interactive session but fails
+# briefly after its CLI was force-exited. Engine selection must have been
+# cached in this shell before then, rather than repeated inside $(engine).
+engine() {
+  if [ -z "$ENGINE" ]; then
+    [ ! -f "$events.session-ended" ] || return 1
+    ENGINE="$fake_engine"
+  fi
+  printf '%s' "$ENGINE"
+}
 generate_handoff() { printf 'handoff\n' >> "$events"; }
 report_skill_changes() { :; }
 warn_machine_notes_size() { :; }
@@ -241,6 +253,7 @@ maybe_offer_baseline() {
   BASELINE_LAUNCH_OUTCOME=continue
   BASELINE_LAUNCH_STATUS=0
 }
+ENGINE=""
 (cd "$tmp/work/app" && cmd_session codex)
 first_materialize="$(grep -n '^materialize$' "$events" | head -n1 | cut -d: -f1)"
 first_ownership="$(grep -n '^ownership:' "$events" | head -n1 | cut -d: -f1)"
@@ -256,5 +269,6 @@ push_line="$(grep -n '^push$' "$events" | head -n1 | cut -d: -f1)"
 # Bash resets it to default in children, so repeated Ctrl-C can otherwise
 # kill ownership repair and leave the handoff writer unable to read Codex.
 grep -Eq "trap -- '' (SIGINT|INT)" "$events.post-session-int"
+grep -Fq "cleanup-engine:$fake_engine" "$events"
 
 printf 'ok: session boundaries, validation, and lifecycle\n'
